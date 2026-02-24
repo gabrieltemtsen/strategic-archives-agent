@@ -1,0 +1,26 @@
+# Core
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+schedule>=1.2.0
+requests>=2.31.0
+
+# Google / Gemini
+google-generativeai>=0.7.0
+google-cloud-texttospeech>=2.16.0
+google-auth>=2.29.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.128.0
+
+# TTS Fallback
+gTTS>=2.5.1
+
+# Video
+moviepy>=1.0.3
+ffmpeg-python>=0.2.0
+Pillow>=10.3.0
+
+# Image generation
+huggingface-hub>=0.23.0
+
+# Timezone
+pytz>=2024.1

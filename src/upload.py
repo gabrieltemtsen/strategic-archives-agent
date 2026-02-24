@@ -1,0 +1,168 @@
+"""
+YouTube Uploader - Uploads videos via YouTube Data API v3
+Handles OAuth2 auth, metadata, thumbnail, and scheduling
+"""
+
+import os
+import logging
+import pickle
+from pathlib import Path
+from typing import Optional
+from datetime import datetime, timezone
+import pytz
+
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+logger = logging.getLogger(__name__)
+
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",
+]
+TOKEN_PATH = ".youtube_token.pkl"
+CLIENT_SECRETS_PATH = "client_secrets.json"
+
+
+class YouTubeUploader:
+    def __init__(self, config: dict):
+        self.config = config
+        self.yt_config = config.get("youtube", {})
+        self.service = None
+
+    def _authenticate(self):
+        """Handle OAuth2 authentication."""
+        creds = None
+
+        if os.path.exists(TOKEN_PATH):
+            with open(TOKEN_PATH, "rb") as f:
+                creds = pickle.load(f)
+
+        if creds and creds.valid:
+            pass
+        elif creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            with open(TOKEN_PATH, "wb") as f:
+                pickle.dump(creds, f)
+        else:
+            if not os.path.exists(CLIENT_SECRETS_PATH):
+                raise FileNotFoundError(
+                    f"YouTube OAuth client secrets not found at '{CLIENT_SECRETS_PATH}'. "
+                    "Download it from Google Cloud Console → APIs & Services → Credentials."
+                )
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_PATH, SCOPES)
+            creds = flow.run_local_server(port=8080)
+            with open(TOKEN_PATH, "wb") as f:
+                pickle.dump(creds, f)
+
+        self.service = build("youtube", "v3", credentials=creds)
+        logger.info("YouTube API authenticated ✓")
+
+    def _build_schedule_time(self, upload_time: str, tz_name: str) -> str:
+        """Convert 'HH:MM' + timezone to RFC3339 UTC publish time (next occurrence)."""
+        tz = pytz.timezone(tz_name)
+        now = datetime.now(tz)
+        hour, minute = map(int, upload_time.split(":"))
+        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if scheduled <= now:
+            from datetime import timedelta
+            scheduled += timedelta(days=1)
+        return scheduled.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def upload(
+        self,
+        video_path: str,
+        title: str,
+        description: str,
+        tags: list,
+        thumbnail_path: Optional[str] = None,
+        language: str = "en",
+        schedule: bool = True,
+    ) -> dict:
+        """
+        Upload a video to YouTube.
+        Returns dict with video_id and video_url.
+        """
+        if not self.service:
+            self._authenticate()
+
+        app_config = self.config.get("app", {})
+        upload_time = app_config.get("upload_time", "18:00")
+        tz_name = app_config.get("timezone", "Africa/Lagos")
+
+        # Build tags
+        default_tags = self.yt_config.get("tags", [])
+        all_tags = list(set(default_tags + tags))[:500]  # YouTube limit
+
+        # Build snippet
+        snippet = {
+            "title": title[:100],  # YouTube 100 char limit
+            "description": f"{description}\n\n"
+                           f"#KidsVideos #ChildrensContent #EducationalKids",
+            "tags": all_tags,
+            "categoryId": self.yt_config.get("category_id", "22"),
+            "defaultLanguage": language,
+        }
+
+        # Status
+        if schedule:
+            publish_at = self._build_schedule_time(upload_time, tz_name)
+            status = {
+                "privacyStatus": "private",
+                "publishAt": publish_at,
+                "selfDeclaredMadeForKids": self.yt_config.get("made_for_kids", True),
+            }
+            logger.info(f"Video scheduled for: {publish_at}")
+        else:
+            status = {
+                "privacyStatus": self.yt_config.get("privacy_status", "public"),
+                "selfDeclaredMadeForKids": self.yt_config.get("made_for_kids", True),
+            }
+
+        body = {"snippet": snippet, "status": status}
+
+        # Upload video
+        media = MediaFileUpload(
+            video_path,
+            mimetype="video/mp4",
+            resumable=True,
+            chunksize=50 * 1024 * 1024  # 50MB chunks
+        )
+
+        logger.info(f"Uploading '{title}' to YouTube...")
+        request = self.service.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=media
+        )
+
+        response = None
+        while response is None:
+            status_obj, response = request.next_chunk()
+            if status_obj:
+                progress = int(status_obj.progress() * 100)
+                logger.info(f"Upload progress: {progress}%")
+
+        video_id = response["id"]
+        video_url = f"https://youtu.be/{video_id}"
+        logger.info(f"Upload complete: {video_url}")
+
+        # Upload thumbnail if provided
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            try:
+                self.service.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(thumbnail_path, mimetype="image/png")
+                ).execute()
+                logger.info("Thumbnail uploaded ✓")
+            except Exception as e:
+                logger.warning(f"Thumbnail upload failed: {e}")
+
+        return {
+            "video_id": video_id,
+            "video_url": video_url,
+            "title": title,
+            "scheduled_for": publish_at if schedule else "immediate",
+        }

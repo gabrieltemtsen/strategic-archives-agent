@@ -1,0 +1,31 @@
+# Environment
+.env
+*.env
+
+# YouTube auth
+.youtube_token.pkl
+client_secrets.json
+
+# Output / generated files
+output/
+*.mp4
+*.mp3
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Google credentials
+*.json
+!.env.example

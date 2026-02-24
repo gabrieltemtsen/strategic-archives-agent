@@ -17,9 +17,26 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 class TelegramApproval:
     def __init__(self, config: dict):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
         self.timeout = config.get("telegram", {}).get("approval_timeout", 3600)
+
+        if self.token and self.chat_id:
+            # chat_id must be a numeric integer for personal chats
+            # e.g. 123456789  NOT  @username
+            if self.chat_id.startswith("@"):
+                logger.warning(
+                    "TELEGRAM_CHAT_ID looks like a username (@...). "
+                    "For personal/DM chats use your numeric user ID instead. "
+                    "Get it by messaging @userinfobot on Telegram."
+                )
+            self._validated = True
+        else:
+            logger.warning(
+                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — "
+                "Telegram notifications disabled."
+            )
+            self._validated = False
 
     def _api(self, method: str, **kwargs) -> dict:
         url = TELEGRAM_API.format(token=self.token, method=method)
@@ -47,7 +64,27 @@ class TelegramApproval:
         """
         Send script to Telegram for approval.
         Returns: {'status': 'approved'|'edited'|'rejected', 'script_data': dict}
+        Falls back to CLI prompt if Telegram is not configured.
         """
+        if not self._validated:
+            # CLI fallback when Telegram is not set up
+            logger.info("Telegram not configured — falling back to CLI approval")
+            print("\n" + "="*60)
+            print(f"📋 SCRIPT READY FOR REVIEW")
+            print("="*60)
+            print(f"Title   : {script_data.get('title', 'Untitled')}")
+            print(f"Type    : {script_data.get('content_type', 'N/A')}")
+            print(f"Language: {script_data.get('language', 'English')}")
+            print("-"*60)
+            print(script_data.get("script", "")[:600] + "...\n")
+            choice = input("Approve? [y/N/r(egenerate)]: ").strip().lower()
+            if choice == "y":
+                return {"status": "approved", "script_data": script_data}
+            elif choice == "r":
+                return {"status": "rejected", "script_data": script_data}
+            else:
+                return {"status": "timeout", "script_data": script_data}
+
         content_type = script_data.get("content_type", "video")
         title = script_data.get("title", "Untitled")
         language = script_data.get("language", "English")
@@ -162,8 +199,10 @@ class TelegramApproval:
 
     def notify(self, message: str):
         """Send a simple notification message."""
-        if self.token and self.chat_id:
-            try:
-                self._send_message(message)
-            except Exception as e:
-                logger.warning(f"Telegram notification failed: {e}")
+        if not self._validated:
+            logger.info(f"[Telegram disabled] {message}")
+            return
+        try:
+            self._send_message(message)
+        except Exception as e:
+            logger.warning(f"Telegram notification failed: {e}")

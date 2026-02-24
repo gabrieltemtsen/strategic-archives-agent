@@ -1,6 +1,7 @@
 """
 Script Generator - Uses Gemini API to generate kids video scripts
 Supports: Bedtime Stories, Fun Facts, and extensible content types
+Uses: google-genai SDK (new, replaces deprecated google-generativeai)
 """
 
 import os
@@ -8,13 +9,12 @@ import json
 import random
 import logging
 from typing import Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 BEDTIME_STORY_PROMPT = """
@@ -118,18 +118,22 @@ FUN_FACT_TOPICS = [
 ]
 
 
+GEMINI_MODEL = "gemini-2.0-flash"
+
+
 class ScriptGenerator:
     def __init__(self, config: dict):
         self.config = config
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.content_config = config.get("content", {})
 
     def _call_gemini(self, prompt: str) -> dict:
         """Call Gemini API and parse JSON response."""
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self.client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.8,
                     top_p=0.95,
                     max_output_tokens=4096,

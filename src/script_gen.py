@@ -118,7 +118,7 @@ FUN_FACT_TOPICS = [
 ]
 
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 class ScriptGenerator:
@@ -127,7 +127,7 @@ class ScriptGenerator:
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.content_config = config.get("content", {})
 
-    def _call_gemini(self, prompt: str) -> dict:
+    def _call_gemini(self, prompt: str, _retry: int = 0) -> dict:
         """Call Gemini API and parse JSON response."""
         try:
             response = self.client.models.generate_content(
@@ -136,7 +136,7 @@ class ScriptGenerator:
                 config=types.GenerateContentConfig(
                     temperature=0.8,
                     top_p=0.95,
-                    max_output_tokens=4096,
+                    max_output_tokens=8192,
                 )
             )
             # Extract JSON from response
@@ -152,6 +152,9 @@ class ScriptGenerator:
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse Gemini response as JSON: {e}")
             logger.debug(f"Raw response: {response.text[:500]}")
+            if _retry < 2:
+                logger.info(f"Retrying Gemini call (attempt {_retry + 2})...")
+                return self._call_gemini(prompt, _retry=_retry + 1)
             raise
         except Exception as e:
             logger.error(f"Gemini API error: {e}")

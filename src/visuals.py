@@ -14,7 +14,7 @@ from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
-HF_API_URL = "https://api-inference.huggingface.co/models/"
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/"
 
 
 class VisualsGenerator:
@@ -24,7 +24,7 @@ class VisualsGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.hf_token = os.getenv("HUGGINGFACE_API_TOKEN", "")
         self.model = self.config.get(
-            "model", "stabilityai/stable-diffusion-xl-base-1.0"
+            "model", "black-forest-labs/FLUX.1-schnell"
         )
         self.style_prefix = self.config.get(
             "style",
@@ -52,9 +52,6 @@ class VisualsGenerator:
         payload = {
             "inputs": prompt,
             "parameters": {
-                "negative_prompt": self.negative_prompt,
-                "num_inference_steps": 20,
-                "guidance_scale": 7.5,
                 "width": 1280,
                 "height": 720,
             }
@@ -70,6 +67,8 @@ class VisualsGenerator:
                     logger.info(f"Model loading, waiting {wait_time}s...")
                     time.sleep(wait_time)
                     continue
+                if not response.ok:
+                    logger.warning(f"HF API error {response.status_code}: {response.text[:300]}")
                 response.raise_for_status()
                 with open(output_path, "wb") as f:
                     f.write(response.content)

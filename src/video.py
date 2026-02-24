@@ -45,12 +45,11 @@ class VideoCompiler:
         Compile final video from images + audio.
         Returns path to output MP4 file.
         """
-        from moviepy.editor import (
+        from moviepy import (
             ImageClip, AudioFileClip, CompositeAudioClip,
-            AudioFileClip as BGMusic, concatenate_videoclips,
-            afx
+            concatenate_videoclips, concatenate_audioclips,
+            vfx, afx
         )
-        import numpy as np
 
         output_path = str(self.output_dir / f"{job_id}_final.mp4")
         logger.info(f"Compiling video: {len(image_paths)} scenes → {output_path}")
@@ -71,36 +70,36 @@ class VideoCompiler:
 
         for i, img_path in enumerate(image_paths):
             clip = ImageClip(img_path, duration=time_per_image)
-            clip = clip.resize((self.width, self.height))
+            clip = clip.resized((self.width, self.height))
 
             if transition == "fade" and i > 0:
-                clip = clip.crossfadein(0.5)
+                clip = clip.with_effects([vfx.CrossFadeIn(0.5)])
 
             clips.append(clip)
 
         # Concatenate all clips
         video = concatenate_videoclips(clips, method="compose", padding=-0.5 if transition == "fade" else 0)
-        video = video.set_duration(total_duration)
+        video = video.with_duration(total_duration)
 
         # Add background music
         bg_music_path = self._get_background_music()
         if bg_music_path:
             try:
-                bg_music = BGMusic(bg_music_path)
+                bg_music = AudioFileClip(bg_music_path)
                 # Loop music if shorter than video
                 if bg_music.duration < total_duration:
                     loops = int(total_duration / bg_music.duration) + 1
-                    from moviepy.editor import concatenate_audioclips
                     bg_music = concatenate_audioclips([bg_music] * loops)
-                bg_music = bg_music.subclip(0, total_duration)
+                bg_music = bg_music.subclipped(0, total_duration)
                 # Apply volume and fade
                 music_vol = self.music_config.get("volume", 0.15)
                 fade_in = self.music_config.get("fade_in", 3)
                 fade_out = self.music_config.get("fade_out", 5)
-                bg_music = (bg_music
-                            .volumex(music_vol)
-                            .audio_fadein(fade_in)
-                            .audio_fadeout(fade_out))
+                bg_music = bg_music.with_effects([
+                    afx.MultiplyVolume(music_vol),
+                    afx.AudioFadeIn(fade_in),
+                    afx.AudioFadeOut(fade_out),
+                ])
                 # Mix narration + music
                 final_audio = CompositeAudioClip([narration, bg_music])
             except Exception as e:
@@ -109,7 +108,7 @@ class VideoCompiler:
         else:
             final_audio = narration
 
-        video = video.set_audio(final_audio)
+        video = video.with_audio(final_audio)
 
         # Write final video
         logger.info("Rendering final video (this may take a few minutes)...")

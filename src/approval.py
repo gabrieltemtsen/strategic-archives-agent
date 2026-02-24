@@ -6,6 +6,7 @@ Supports: Approve, Edit, Reject (regenerate)
 
 import os
 import time
+import html as html_mod
 import logging
 import requests
 from typing import Optional
@@ -41,6 +42,8 @@ class TelegramApproval:
     def _api(self, method: str, **kwargs) -> dict:
         url = TELEGRAM_API.format(token=self.token, method=method)
         response = requests.post(url, json=kwargs, timeout=30)
+        if not response.ok:
+            logger.error(f"Telegram API error: {response.status_code} {response.text}")
         response.raise_for_status()
         return response.json()
 
@@ -49,7 +52,7 @@ class TelegramApproval:
         kwargs = {
             "chat_id": self.chat_id,
             "text": text,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML", # Changed from "Markdown" to "HTML"
         }
         if reply_markup:
             kwargs["reply_markup"] = reply_markup
@@ -90,13 +93,17 @@ class TelegramApproval:
         language = script_data.get("language", "English")
         script_preview = script_data.get("script", "")[:800]
 
+        # Escape HTML special chars in user content
+        safe_title = html_mod.escape(title)
+        safe_preview = html_mod.escape(script_preview)
+
         message = (
-            f"🎬 *New Video Ready for Review*\n\n"
-            f"📌 *Type:* {content_type.replace('_', ' ').title()}\n"
-            f"🌍 *Language:* {language}\n"
-            f"📝 *Title:* {title}\n\n"
-            f"*Script Preview (first 800 chars):*\n"
-            f"_{script_preview}..._\n\n"
+            f"🎬 <b>New Video Ready for Review</b>\n\n"
+            f"📌 <b>Type:</b> {content_type.replace('_', ' ').title()}\n"
+            f"🌍 <b>Language:</b> {language}\n"
+            f"📝 <b>Title:</b> {safe_title}\n\n"
+            f"<b>Script Preview (first 800 chars):</b>\n"
+            f"<i>{safe_preview}...</i>\n\n"
             f"👇 What do you want to do?"
         )
 
@@ -135,11 +142,11 @@ class TelegramApproval:
                     self._api("answerCallbackQuery", callback_query_id=cq["id"])
 
                     if data == "approve":
-                        self._send_message("✅ *Approved!* Starting video generation now... 🎬")
+                        self._send_message("✅ <b>Approved!</b> Starting video generation now... 🎬")
                         return {"status": "approved", "script_data": script_data}
 
                     elif data == "reject":
-                        self._send_message("🔄 *Rejected.* Regenerating a new script...")
+                        self._send_message("🔄 <b>Rejected.</b> Regenerating a new script...")
                         return {"status": "rejected", "script_data": script_data}
 
                     elif data == "edit_title":
@@ -151,7 +158,7 @@ class TelegramApproval:
                         if title_response:
                             script_data["title"] = title_response
                             self._send_message(
-                                f"✅ Title updated to: *{title_response}*\n\nApprove now?",
+                                f"✅ Title updated to: <b>{html_mod.escape(title_response)}</b>\n\nApprove now?",
                                 reply_markup={
                                     "inline_keyboard": [[
                                         {"text": "✅ Approve", "callback_data": "approve"},
@@ -165,7 +172,7 @@ class TelegramApproval:
                         # Split into chunks (Telegram 4096 char limit)
                         for i in range(0, len(full_script), 4000):
                             chunk = full_script[i:i+4000]
-                            self._send_message(f"```\n{chunk}\n```")
+                            self._send_message(f"<pre>{html_mod.escape(chunk)}</pre>")
                         self._send_message(
                             "👆 Full script above. Approve or reject?",
                             reply_markup={
@@ -181,7 +188,7 @@ class TelegramApproval:
         # Timeout — auto-skip
         logger.warning(f"Approval timeout after {self.timeout}s. Skipping today's video.")
         self._send_message(
-            f"⏰ *Approval timed out* after {self.timeout//60} minutes. "
+            f"⏰ <b>Approval timed out</b> after {self.timeout//60} minutes. "
             "Today's video was skipped. I'll try again tomorrow!"
         )
         return {"status": "timeout", "script_data": script_data}

@@ -23,7 +23,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube",
 ]
 TOKEN_PATH = ".youtube_token.pkl"
-CLIENT_SECRETS_PATH = "client_secrets.json"
+CLIENT_SECRETS_PATH = "client_secret.json"
 
 
 class YouTubeUploader:

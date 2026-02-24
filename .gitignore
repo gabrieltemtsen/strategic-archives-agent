@@ -5,6 +5,7 @@
 # YouTube auth
 .youtube_token.pkl
 client_secrets.json
+client_secret.json
 
 # Output / generated files
 output/

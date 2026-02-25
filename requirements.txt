@@ -24,3 +24,8 @@ huggingface-hub>=0.23.0
 
 # Timezone
 pytz>=2024.1
+
+# Dashboard (FastAPI + live log streaming)
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+sse-starlette>=2.1.0

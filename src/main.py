@@ -205,15 +205,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Strategic Archives YouTube Agent")
     parser.add_argument("--run-now", action="store_true", help="Run job immediately")
     parser.add_argument("--dry-run", action="store_true", help="Stop after script approval (no video/upload)")
+    parser.add_argument("--dashboard", action="store_true", help="Launch web dashboard at http://localhost:8000")
     parser.add_argument("--type", choices=["bedtime_story", "fun_facts"], help="Content type override")
     parser.add_argument("--lang", help="Language code override (en, fr, yo, ha, ig, pt, es)")
     parser.add_argument("--schedule", action="store_true", default=True, help="Start daily scheduler")
     parser.add_argument("--config", default="config/config.yaml", help="Config file path")
+    parser.add_argument("--port", type=int, default=8000, help="Dashboard port (default: 8000)")
 
     args = parser.parse_args()
     config = load_config(args.config)
 
-    if args.run_now or args.dry_run:
+    if args.dashboard:
+        from src.dashboard import start_dashboard
+        start_dashboard(port=args.port)
+    elif args.run_now or args.dry_run:
         run_daily_job(
             config=config,
             content_type=args.type,

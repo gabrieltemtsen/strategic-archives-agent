@@ -24,6 +24,7 @@ content:
     resolution: "1920x1080"
     fps: 24
     background_color: "0x1a1a2e"
+    transition: "fade"
 
   bedtime_stories:
     word_count_min: 800
@@ -73,18 +74,18 @@ telegram:
   chat_id: "" # Set in .env
 
 tts:
-  provider: "google" # google | gtts
+  provider: "gemini" # gemini | google | gtts
   speaking_rate: 0.85 # Slightly slower for kids
   pitch: 2.0 # Slightly higher pitch for kids
   volume_gain_db: 2.0
 
 visuals:
-  provider: "huggingface" # huggingface | local_sd
+  provider: "huggingface"
   model: "black-forest-labs/FLUX.1-schnell"
-  style: "children's book illustration, colorful, cute, safe for kids"
+  style: "high quality digital illustration, Pixar-style 3D render, vibrant colors, soft lighting, children's animation, professional studio quality, detailed, 4K"
   negative_prompt: "scary, dark, violent, adult content, realistic, photographic"
   images_per_video: 15
-  transition: "fade" # fade | slide | zoom
+  parallel_workers: 3
 
 music:
   volume: 0.15 # Background music volume (0.0 - 1.0)

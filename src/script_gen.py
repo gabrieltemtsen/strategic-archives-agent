@@ -132,11 +132,11 @@ class ScriptGenerator:
         try:
             response = self.client.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=prompt,
+                contents=prompt + "\n\nIMPORTANT: Return ONLY valid, compact JSON. Keep the script concise. No markdown formatting.",
                 config=types.GenerateContentConfig(
                     temperature=0.8,
                     top_p=0.95,
-                    max_output_tokens=8192,
+                    max_output_tokens=32768,
                 )
             )
             # Extract JSON from response
@@ -148,7 +148,42 @@ class ScriptGenerator:
                 text = text[3:]
             if text.endswith("```"):
                 text = text[:-3]
-            return json.loads(text.strip())
+            text = text.strip()
+
+            # Try direct parse first
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+
+            # Attempt to repair: fix unescaped newlines inside JSON strings
+            import re
+            repaired = re.sub(r'(?<=": ")(.*?)(?="[,\}])', lambda m: m.group(0).replace('\n', '\\n'), text, flags=re.DOTALL)
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+
+            # Attempt to repair: truncated JSON — close any open strings/objects
+            if not text.rstrip().endswith('}'):
+                # Try to close the JSON
+                fixed = text.rstrip().rstrip(',')
+                # Count open braces/brackets
+                open_braces = fixed.count('{') - fixed.count('}')
+                open_brackets = fixed.count('[') - fixed.count(']')
+                # Check if we're in an unclosed string
+                in_string = fixed.count('"') % 2 != 0
+                if in_string:
+                    fixed += '"'
+                fixed += ']' * max(0, open_brackets)
+                fixed += '}' * max(0, open_braces)
+                try:
+                    return json.loads(fixed)
+                except json.JSONDecodeError:
+                    pass
+
+            raise json.JSONDecodeError("Could not parse or repair JSON", text[:100], 0)
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse Gemini response as JSON: {e}")
             logger.debug(f"Raw response: {response.text[:500]}")

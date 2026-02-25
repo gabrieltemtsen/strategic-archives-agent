@@ -1,6 +1,7 @@
 """
 Text-to-Speech Module
-Primary: Google Cloud TTS (free 4M chars/month)
+Primary: Gemini TTS (natural, expressive voices via Gemini API)
+Secondary: Google Cloud TTS (free 4M chars/month)
 Fallback: gTTS (Google Translate TTS - fully free)
 """
 
@@ -18,7 +19,7 @@ class TTSEngine:
         self.config = config.get("tts", {})
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.provider = self.config.get("provider", "google")
+        self.provider = self.config.get("provider", "gemini")
 
     def _clean_script(self, script: str) -> str:
         """Remove markers and clean script for TTS."""
@@ -45,6 +46,147 @@ class TTSEngine:
         if current:
             chunks.append(current.strip())
         return chunks
+
+    def synthesize_gemini(
+        self, text: str, output_path: str, language_code: str = "en"
+    ) -> str:
+        """
+        Use Gemini TTS for natural, expressive voice synthesis.
+        Uses the same GEMINI_API_KEY — no extra credentials needed.
+        """
+        from google import genai
+        from google.genai import types
+        import wave
+        import struct
+        import io
+
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+        # Map language codes to Gemini voice names
+        voice_map = {
+            "en": "Kore",    # Warm, friendly English voice
+            "fr": "Kore",
+            "es": "Kore",
+            "pt": "Kore",
+            "yo": "Kore",
+            "ha": "Kore",
+            "ig": "Kore",
+        }
+        voice_name = voice_map.get(language_code, "Kore")
+
+        chunks = self._split_into_chunks(text, max_chars=4000)
+        audio_files = []
+
+        for i, chunk in enumerate(chunks):
+            chunk_path = output_path.replace(".mp3", f"_chunk_{i}.wav")
+
+            # Use timeout to prevent hanging API calls
+            import concurrent.futures
+            def _call_tts():
+                return client.models.generate_content(
+                    model="gemini-2.5-flash-preview-tts",
+                    contents=chunk,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=voice_name,
+                                )
+                            )
+                        ),
+                    ),
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_call_tts)
+                try:
+                    response = future.result(timeout=120)  # 2 min max per chunk
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError(f"Gemini TTS timed out on chunk {i+1}/{len(chunks)}")
+
+            # Extract audio data from response
+            audio_data = response.candidates[0].content.parts[0].inline_data.data
+            mime_type = response.candidates[0].content.parts[0].inline_data.mime_type or ""
+
+            # Gemini returns audio/L16 (raw PCM) or WAV — handle both
+            if audio_data[:4] == b'RIFF':
+                # Already a proper WAV file
+                with open(chunk_path, "wb") as f:
+                    f.write(audio_data)
+            else:
+                # Raw PCM data - wrap in WAV container
+                # Gemini TTS typically outputs 24kHz, 16-bit, mono PCM
+                sample_rate = 24000
+                if "rate=" in mime_type:
+                    try:
+                        sample_rate = int(mime_type.split("rate=")[1].split(";")[0].strip())
+                    except (ValueError, IndexError):
+                        pass
+                with wave.open(chunk_path, "wb") as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(audio_data)
+
+            audio_files.append(chunk_path)
+            logger.info(f"Gemini TTS chunk {i+1}/{len(chunks)} synthesized")
+
+        # Merge and convert to MP3
+        if len(audio_files) == 1:
+            self._convert_wav_to_mp3(audio_files[0], output_path)
+            os.remove(audio_files[0])
+        else:
+            # Merge WAV files using Python wave module (no ffmpeg concat issues)
+            merged_wav = output_path.replace(".mp3", "_merged.wav")
+            self._merge_wav_python(audio_files, merged_wav)
+            self._convert_wav_to_mp3(merged_wav, output_path)
+            os.remove(merged_wav)
+            for f in audio_files:
+                if os.path.exists(f):
+                    os.remove(f)
+
+        return output_path
+
+    def _merge_wav_python(self, wav_files: list, output_path: str):
+        """Merge WAV files using Python wave module — no ffmpeg dependency."""
+        import wave
+
+        # Read first file to get params
+        with wave.open(wav_files[0], "rb") as first:
+            params = first.getparams()
+
+        with wave.open(output_path, "wb") as output:
+            output.setparams(params)
+            for wav_file in wav_files:
+                with wave.open(wav_file, "rb") as wf:
+                    output.writeframes(wf.readframes(wf.getnframes()))
+        logger.info(f"Merged {len(wav_files)} audio chunks → {output_path}")
+
+    def _convert_wav_to_mp3(self, wav_path: str, mp3_path: str):
+        """Convert WAV to MP3 using ffmpeg."""
+        import subprocess
+        subprocess.run([
+            "ffmpeg", "-i", wav_path,
+            "-codec:a", "libmp3lame", "-qscale:a", "2",
+            mp3_path, "-y", "-loglevel", "quiet"
+        ], check=True)
+
+    def _merge_audio_wav(self, audio_files: list, output_path: str):
+        """Merge multiple WAV/audio files using ffmpeg re-encode (fallback)."""
+        import subprocess
+        # Use filter_complex to concatenate with re-encoding (avoids codec issues)
+        inputs = []
+        for f in audio_files:
+            inputs.extend(["-i", f])
+        filter_str = "".join(f"[{i}:a]" for i in range(len(audio_files)))
+        filter_str += f"concat=n={len(audio_files)}:v=0:a=1[out]"
+        subprocess.run(
+            ["ffmpeg"] + inputs +
+            ["-filter_complex", filter_str, "-map", "[out]",
+             output_path, "-y", "-loglevel", "quiet"],
+            check=True
+        )
 
     def synthesize_google_cloud(
         self, text: str, output_path: str, language_code: str = "en-US"
@@ -114,7 +256,6 @@ class TTSEngine:
     ) -> str:
         """Use gTTS (Google Translate TTS) - fully free fallback."""
         from gtts import gTTS
-        import subprocess
 
         # gTTS language codes
         lang_map = {
@@ -169,14 +310,32 @@ class TTSEngine:
 
         logger.info(f"Synthesizing speech ({len(clean_text)} chars) via {self.provider}")
 
-        try:
-            if self.provider == "google":
-                return self.synthesize_google_cloud(clean_text, output_path, language_code)
-            else:
-                return self.synthesize_gtts(clean_text, output_path, language_code)
-        except Exception as e:
-            logger.warning(f"Primary TTS provider failed: {e}. Falling back to gTTS...")
-            return self.synthesize_gtts(clean_text, output_path, language_code)
+        # Try providers in order: gemini → google cloud → gtts
+        providers = []
+        if self.provider == "gemini":
+            providers = [
+                ("gemini", lambda: self.synthesize_gemini(clean_text, output_path, language_code)),
+                ("gtts", lambda: self.synthesize_gtts(clean_text, output_path, language_code)),
+            ]
+        elif self.provider == "google":
+            providers = [
+                ("google", lambda: self.synthesize_google_cloud(clean_text, output_path, language_code)),
+                ("gtts", lambda: self.synthesize_gtts(clean_text, output_path, language_code)),
+            ]
+        else:
+            providers = [
+                ("gtts", lambda: self.synthesize_gtts(clean_text, output_path, language_code)),
+            ]
+
+        for name, synth_fn in providers:
+            try:
+                return synth_fn()
+            except Exception as e:
+                logger.warning(f"TTS provider '{name}' failed: {e}.")
+                if name != providers[-1][0]:
+                    logger.info(f"Falling back to next provider...")
+                else:
+                    raise
 
     def get_duration_estimate(self, script: str) -> float:
         """Estimate audio duration in seconds (avg 130 words/min for kids)."""

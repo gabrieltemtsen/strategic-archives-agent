@@ -389,7 +389,14 @@ async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 
-def start_dashboard(host: str = "0.0.0.0", port: int = 8000):
-    """Start the dashboard server."""
-    logger.info(f"Starting dashboard at http://localhost:{port}")
+@app.get("/health")
+async def health_railway():
+    """Railway healthcheck endpoint."""
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+
+def start_dashboard(host: str = "0.0.0.0", port: int = None):
+    """Start the dashboard server. Reads $PORT from Railway env if not provided."""
+    port = port or int(os.getenv("PORT", 8000))
+    logger.info(f"Starting dashboard at http://0.0.0.0:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")

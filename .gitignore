@@ -13,6 +13,9 @@ output/
 *.mp3
 *.log
 
+# Database (use Railway Volume for persistence)
+data/jobs.db
+
 # Python
 __pycache__/
 *.pyc

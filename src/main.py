@@ -210,14 +210,18 @@ if __name__ == "__main__":
     parser.add_argument("--lang", help="Language code override (en, fr, yo, ha, ig, pt, es)")
     parser.add_argument("--schedule", action="store_true", default=True, help="Start daily scheduler")
     parser.add_argument("--config", default="config/config.yaml", help="Config file path")
-    parser.add_argument("--port", type=int, default=8000, help="Dashboard port (default: 8000)")
+    parser.add_argument("--port", type=int, default=None, help="Dashboard port (default: $PORT env or 8000)")
 
     args = parser.parse_args()
     config = load_config(args.config)
 
     if args.dashboard:
+        from src.startup import bootstrap
+        bootstrap()  # Decode Railway secrets → files before anything starts
         from src.dashboard import start_dashboard
-        start_dashboard(port=args.port)
+        # Railway injects $PORT — respect it, fall back to --port arg or 8000
+        port = args.port or int(os.getenv("PORT", 8000))
+        start_dashboard(port=port)
     elif args.run_now or args.dry_run:
         run_daily_job(
             config=config,

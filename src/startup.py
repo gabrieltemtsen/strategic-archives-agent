@@ -21,64 +21,83 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SECRET_FILES = [
-    {
-        "env_var": "YOUTUBE_CLIENT_SECRET_B64",
-        "output_path": "client_secret.json",
-        "required": True,
-        "description": "YouTube OAuth client secret",
-    },
-    {
-        "env_var": "YOUTUBE_TOKEN_B64",
-        "output_path": ".youtube_token.pkl",
-        "required": False,
-        "description": "YouTube OAuth token (generated after first auth)",
-    },
-]
+def _decode_client_secret():
+    """Decode YOUTUBE_CLIENT_SECRET_B64 → client_secret.json"""
+    value = os.getenv("YOUTUBE_CLIENT_SECRET_B64", "").strip()
+    if not value:
+        logger.warning(
+            "⚠️  YOUTUBE_CLIENT_SECRET_B64 not set — YouTube upload will fail. "
+            "Encode with: python3 -c \"import base64,json; "
+            "print(base64.b64encode(json.dumps(YOUR_SECRET_DICT).encode()).decode())\""
+        )
+        return
+    if os.path.exists("client_secret.json"):
+        logger.debug("client_secret.json already exists — skipping decode")
+        return
+    try:
+        decoded = base64.b64decode(value)
+        with open("client_secret.json", "wb") as f:
+            f.write(decoded)
+        logger.info("✅ Decoded YOUTUBE_CLIENT_SECRET_B64 → client_secret.json")
+    except Exception as e:
+        logger.error(f"Failed to decode YOUTUBE_CLIENT_SECRET_B64: {e}")
+        raise
+
+
+def _decode_youtube_token():
+    """
+    Decode YOUTUBE_TOKEN_B64 → .youtube_token.pkl
+    Accepts two formats:
+      1. JSON  {"token":..., "refresh_token":..., ...}  (Railway-friendly)
+      2. Raw pickle bytes (local dev export)
+    Converts JSON → Credentials object → pickle so upload.py needs no changes.
+    """
+    value = os.getenv("YOUTUBE_TOKEN_B64", "").strip()
+    if not value:
+        logger.debug("YOUTUBE_TOKEN_B64 not set — YouTube token not pre-loaded")
+        return
+    if os.path.exists(".youtube_token.pkl"):
+        logger.debug(".youtube_token.pkl already exists — skipping decode")
+        return
+    try:
+        import pickle, json as _json
+        raw = base64.b64decode(value)
+
+        # Try JSON format first (Railway-native)
+        try:
+            token_data = _json.loads(raw.decode("utf-8"))
+            from google.oauth2.credentials import Credentials
+            creds = Credentials(
+                token=token_data.get("token"),
+                refresh_token=token_data.get("refresh_token"),
+                token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                client_id=token_data.get("client_id"),
+                client_secret=token_data.get("client_secret"),
+                scopes=token_data.get("scopes", [
+                    "https://www.googleapis.com/auth/youtube.upload",
+                    "https://www.googleapis.com/auth/youtube"
+                ])
+            )
+            with open(".youtube_token.pkl", "wb") as f:
+                pickle.dump(creds, f)
+            logger.info("✅ Decoded YOUTUBE_TOKEN_B64 (JSON) → .youtube_token.pkl")
+        except (_json.JSONDecodeError, UnicodeDecodeError):
+            # Fall back to raw pickle bytes
+            with open(".youtube_token.pkl", "wb") as f:
+                f.write(raw)
+            logger.info("✅ Decoded YOUTUBE_TOKEN_B64 (pickle) → .youtube_token.pkl")
+
+    except Exception as e:
+        logger.error(f"Failed to decode YOUTUBE_TOKEN_B64: {e}")
 
 
 def bootstrap():
     """
-    Decode base64 env vars → files.
-    Call this once at app startup before any YouTube API calls.
+    Decode base64 env vars → files at startup.
+    Call before any YouTube API calls.
     """
-    for secret in SECRET_FILES:
-        env_var = secret["env_var"]
-        output_path = secret["output_path"]
-        required = secret["required"]
-        description = secret["description"]
-
-        value = os.getenv(env_var, "").strip()
-
-        if not value:
-            if required:
-                logger.warning(
-                    f"⚠️  {env_var} not set — {description} unavailable. "
-                    f"YouTube upload will fail. "
-                    f"Run: base64 -i client_secret.json | tr -d '\\n'  "
-                    f"and set it as a Railway env var."
-                )
-            else:
-                logger.debug(f"{env_var} not set — skipping {output_path}")
-            continue
-
-        # Skip if file already exists (local dev with real files)
-        if os.path.exists(output_path):
-            logger.debug(f"{output_path} already exists — skipping decode")
-            continue
-
-        try:
-            decoded = base64.b64decode(value)
-            with open(output_path, "wb") as f:
-                f.write(decoded)
-            logger.info(f"✅ Decoded {env_var} → {output_path}")
-        except Exception as e:
-            logger.error(f"Failed to decode {env_var}: {e}")
-            if required:
-                raise RuntimeError(
-                    f"Could not decode {env_var}. "
-                    "Make sure it's valid base64 (no newlines)."
-                ) from e
+    _decode_client_secret()
+    _decode_youtube_token()
 
 
 def encode_file_instructions():

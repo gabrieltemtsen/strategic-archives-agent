@@ -47,7 +47,7 @@ def load_config(path: str = "config/config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Event, content_type: str = None, language: str = None):
+def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Event, content_type: str = None, language: str = None, video_format: str = "long"):
     """Run a video generation job in a background thread with log capture."""
     global _current_job_id
 
@@ -60,7 +60,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
     from src.approval import TelegramApproval
 
     store = get_store()
-    store.create_job(job_id, content_type or "", language or "")
+    store.create_job(job_id, content_type or "", language or "", video_format=video_format)
 
     # Attach log handler to capture all logs for this job
     root_logger = logging.getLogger()
@@ -82,7 +82,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         check_cancelled()
         store.update_job(job_id, step="Generating script...", step_number=1)
         gen = ScriptGenerator(config)
-        script_data = gen.generate(content_type=content_type, language=language)
+        script_data = gen.generate(content_type=content_type, language=language, video_format=video_format)
         store.update_job(job_id, title=script_data["title"])
         logger.info(f"Script generated: '{script_data['title']}'")
 
@@ -93,7 +93,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
 
         if result["status"] == "rejected":
             logger.info("Script rejected. Regenerating...")
-            script_data = gen.generate(content_type=content_type, language=language)
+            script_data = gen.generate(content_type=content_type, language=language, video_format=video_format)
             result = approval.send_for_approval(script_data)
 
         if result["status"] in ("rejected", "timeout"):
@@ -117,12 +117,23 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         # Step 4: Images
         check_cancelled()
         store.update_job(job_id, step="Generating scene images...", step_number=4)
-        vis = VisualsGenerator(config, output_dir=output_dir)
+        is_short = video_format == "short"
+        aspect_ratio = "9:16" if is_short else "16:9"
+        vis = VisualsGenerator(config, output_dir=output_dir, aspect_ratio=aspect_ratio)
         scene_prompts = script_data.get("scene_prompts", [])
-        if len(scene_prompts) < 10:
-            base = scene_prompts or ["colorful children's storybook scene"]
-            while len(scene_prompts) < 15:
-                scene_prompts.append(base[len(scene_prompts) % len(base)])
+
+        # Shorts need 3-5 images, long-form needs 12-15
+        if is_short:
+            if len(scene_prompts) < 3:
+                base = scene_prompts or ["colorful children's vertical scene"]
+                while len(scene_prompts) < 3:
+                    scene_prompts.append(base[len(scene_prompts) % len(base)])
+            scene_prompts = scene_prompts[:5]  # Cap at 5 for shorts
+        else:
+            if len(scene_prompts) < 10:
+                base = scene_prompts or ["colorful children's storybook scene"]
+                while len(scene_prompts) < 15:
+                    scene_prompts.append(base[len(scene_prompts) % len(base)])
 
         image_paths = vis.generate_scene_images(scene_prompts, job_id)
         check_cancelled()
@@ -136,7 +147,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         # Step 5: Compile + Upload
         check_cancelled()
         store.update_job(job_id, step="Compiling video...", step_number=5)
-        compiler = VideoCompiler(config, output_dir=output_dir, assets_dir=assets_dir)
+        compiler = VideoCompiler(config, output_dir=output_dir, assets_dir=assets_dir, video_format=video_format)
         video_path = compiler.compile(
             image_paths=image_paths,
             audio_path=audio_path,
@@ -154,7 +165,8 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
             tags=script_data.get("tags", []),
             thumbnail_path=thumbnail_path,
             language=script_data.get("language_code", "en"),
-            schedule=True
+            schedule=(video_format != "short"),
+            video_format=video_format,
         )
 
         store.update_job(
@@ -226,6 +238,7 @@ async def trigger_job(request: Request):
     body = await request.json() if await request.body() else {}
     content_type = body.get("content_type")
     language = body.get("language")
+    video_format = body.get("format", "long")  # "long" or "short"
 
     import uuid
     job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -235,12 +248,12 @@ async def trigger_job(request: Request):
     config = load_config()
     _current_job_thread = threading.Thread(
         target=run_job_in_background,
-        args=(job_id, config, _cancel_event, content_type, language),
+        args=(job_id, config, _cancel_event, content_type, language, video_format),
         daemon=True
     )
     _current_job_thread.start()
 
-    return {"job_id": job_id, "status": "started"}
+    return {"job_id": job_id, "status": "started", "format": video_format}
 
 
 @app.post("/api/jobs/cancel")

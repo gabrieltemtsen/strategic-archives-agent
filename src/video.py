@@ -13,16 +13,22 @@ logger = logging.getLogger(__name__)
 
 
 class VideoCompiler:
-    def __init__(self, config: dict, output_dir: str = "./output", assets_dir: str = "./assets"):
+    def __init__(self, config: dict, output_dir: str = "./output", assets_dir: str = "./assets", video_format: str = "long"):
         self.config = config
         self.video_config = config.get("content", {}).get("video", {})
         self.music_config = config.get("music", {})
         self.output_dir = Path(output_dir)
         self.assets_dir = Path(assets_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.video_format = video_format
 
-        self.resolution = self.video_config.get("resolution", "1920x1080")
-        self.width, self.height = map(int, self.resolution.split("x"))
+        if video_format == "short":
+            self.width, self.height = 1080, 1920
+            self.max_duration = 59  # YouTube Shorts max
+        else:
+            self.resolution = self.video_config.get("resolution", "1920x1080")
+            self.width, self.height = map(int, self.resolution.split("x"))
+            self.max_duration = None
         self.fps = self.video_config.get("fps", 24)
 
     def _get_background_music(self) -> Optional[str]:
@@ -136,6 +142,13 @@ class VideoCompiler:
         # Load audio to get total duration
         narration = AudioFileClip(audio_path)
         total_duration = narration.duration
+
+        # Cap duration for shorts
+        if self.max_duration and total_duration > self.max_duration:
+            logger.info(f"Trimming audio from {total_duration:.1f}s to {self.max_duration}s for Shorts")
+            narration = narration.subclipped(0, self.max_duration)
+            total_duration = self.max_duration
+
         logger.info(f"Audio duration: {total_duration:.1f}s ({total_duration/60:.1f} min)")
 
         # Calculate duration per image
@@ -149,7 +162,7 @@ class VideoCompiler:
         # Build video clips from images
         clips = []
         transition = self.video_config.get("transition", "fade")
-        crossfade_duration = 1.0
+        crossfade_duration = 0.3 if self.video_format == "short" else 1.0
 
         for i, img_path in enumerate(image_paths):
             clip = ImageClip(img_path, duration=time_per_image)

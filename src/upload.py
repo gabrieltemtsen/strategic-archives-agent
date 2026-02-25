@@ -80,6 +80,7 @@ class YouTubeUploader:
         thumbnail_path: Optional[str] = None,
         language: str = "en",
         schedule: bool = True,
+        video_format: str = "long",
     ) -> dict:
         """
         Upload a video to YouTube.
@@ -96,18 +97,26 @@ class YouTubeUploader:
         default_tags = self.yt_config.get("tags", [])
         all_tags = list(set(default_tags + tags))[:500]  # YouTube limit
 
+        # Shorts-specific adjustments
+        is_short = video_format == "short"
+        if is_short:
+            if "#Shorts" not in title:
+                title = f"{title} #Shorts"
+            all_tags = list(set(all_tags + ["Shorts", "YouTubeShorts", "KidsShorts"]))[:500]
+
         # Build snippet
         snippet = {
             "title": title[:100],  # YouTube 100 char limit
             "description": f"{description}\n\n"
-                           f"#KidsVideos #ChildrensContent #EducationalKids",
+                           f"#KidsVideos #ChildrensContent #EducationalKids"
+                           + (" #Shorts" if is_short else ""),
             "tags": all_tags,
             "categoryId": self.yt_config.get("category_id", "22"),
             "defaultLanguage": language,
         }
 
-        # Status
-        if schedule:
+        # Status — shorts go public immediately, long-form can be scheduled
+        if not is_short and schedule:
             publish_at = self._build_schedule_time(upload_time, tz_name)
             status = {
                 "privacyStatus": "private",
@@ -116,6 +125,7 @@ class YouTubeUploader:
             }
             logger.info(f"Video scheduled for: {publish_at}")
         else:
+            publish_at = None
             status = {
                 "privacyStatus": self.yt_config.get("privacy_status", "public"),
                 "selfDeclaredMadeForKids": self.yt_config.get("made_for_kids", True),
@@ -149,12 +159,27 @@ class YouTubeUploader:
         video_url = f"https://youtu.be/{video_id}"
         logger.info(f"Upload complete: {video_url}")
 
-        # Upload thumbnail if provided
+        # Upload thumbnail if provided (YouTube limit: 2MB)
         if thumbnail_path and os.path.exists(thumbnail_path):
             try:
+                # Compress if over 2MB
+                file_size = os.path.getsize(thumbnail_path)
+                upload_path = thumbnail_path
+                if file_size > 2 * 1024 * 1024:
+                    from PIL import Image
+                    img = Image.open(thumbnail_path).convert("RGB")
+                    upload_path = thumbnail_path.replace(".png", "_thumb.jpg")
+                    quality = 85
+                    while quality > 20:
+                        img.save(upload_path, "JPEG", quality=quality)
+                        if os.path.getsize(upload_path) <= 2 * 1024 * 1024:
+                            break
+                        quality -= 10
+                    logger.info(f"Thumbnail compressed: {file_size//1024}KB → {os.path.getsize(upload_path)//1024}KB")
+
                 self.service.thumbnails().set(
                     videoId=video_id,
-                    media_body=MediaFileUpload(thumbnail_path, mimetype="image/png")
+                    media_body=MediaFileUpload(upload_path, mimetype="image/jpeg" if upload_path.endswith(".jpg") else "image/png")
                 ).execute()
                 logger.info("Thumbnail uploaded ✓")
             except Exception as e:
@@ -164,5 +189,5 @@ class YouTubeUploader:
             "video_id": video_id,
             "video_url": video_url,
             "title": title,
-            "scheduled_for": publish_at if schedule else "immediate",
+            "scheduled_for": publish_at if publish_at else "immediate",
         }

@@ -39,6 +39,7 @@ class JobStore:
                     title TEXT DEFAULT '',
                     content_type TEXT DEFAULT '',
                     language TEXT DEFAULT '',
+                    video_format TEXT DEFAULT 'long',
                     youtube_url TEXT DEFAULT '',
                     youtube_id TEXT DEFAULT '',
                     error TEXT DEFAULT '',
@@ -56,18 +57,23 @@ class JobStore:
                     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
                 )
             """)
+            # Migration: add video_format column if missing
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN video_format TEXT DEFAULT 'long'")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             conn.commit()
 
-    def create_job(self, job_id: str, content_type: str = "", language: str = "") -> dict:
+    def create_job(self, job_id: str, content_type: str = "", language: str = "", video_format: str = "long") -> dict:
         """Create a new job record."""
         now = datetime.now().isoformat()
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, status, content_type, language, created_at) VALUES (?, ?, ?, ?, ?)",
-                (job_id, "running", content_type, language, now)
+                "INSERT INTO jobs (job_id, status, content_type, language, video_format, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (job_id, "running", content_type, language, video_format, now)
             )
             conn.commit()
-        return {"job_id": job_id, "status": "running", "created_at": now}
+        return {"job_id": job_id, "status": "running", "format": video_format, "created_at": now}
 
     def update_job(self, job_id: str, **kwargs):
         """Update job fields."""

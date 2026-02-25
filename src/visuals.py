@@ -23,7 +23,7 @@ _gemini_unavailable = False
 
 
 class VisualsGenerator:
-    def __init__(self, config: dict, output_dir: str = "./output"):
+    def __init__(self, config: dict, output_dir: str = "./output", aspect_ratio: str = "16:9"):
         self.config = config.get("visuals", {})
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +43,12 @@ class VisualsGenerator:
             "ugly, deformed, blurry, low quality"
         )
         self.max_workers = self.config.get("parallel_workers", 3)
+        # Aspect ratio: "16:9" for landscape, "9:16" for shorts/vertical
+        self.aspect_ratio = aspect_ratio
+        if aspect_ratio == "9:16":
+            self.img_width, self.img_height = 1080, 1920
+        else:
+            self.img_width, self.img_height = 1920, 1080
 
     def _build_prompt(self, scene_prompt: str) -> str:
         """Combine scene prompt with style prefix."""
@@ -65,8 +71,8 @@ class VisualsGenerator:
         payload = {
             "inputs": prompt,
             "parameters": {
-                "width": 1920,
-                "height": 1080,
+                "width": self.img_width,
+                "height": self.img_height,
             }
         }
 
@@ -132,8 +138,7 @@ class VisualsGenerator:
                 if hasattr(part, 'inline_data') and part.inline_data:
                     img_data = part.inline_data.data
                     image = Image.open(io.BytesIO(img_data))
-                    # Resize to 1920x1080
-                    image = image.resize((1920, 1080), Image.LANCZOS)
+                    image = image.resize((self.img_width, self.img_height), Image.LANCZOS)
                     image.save(output_path, "PNG")
                     logger.info(f"Gemini image saved: {output_path}")
                     return output_path
@@ -165,7 +170,7 @@ class VisualsGenerator:
                 (255, 220, 100), (100, 220, 255), (220, 100, 255)
             ]
             bg_color = colors[index % len(colors)]
-            img = Image.new("RGB", (1920, 1080), bg_color)
+            img = Image.new("RGB", (self.img_width, self.img_height), bg_color)
             draw = ImageDraw.Draw(img)
             words = scene_prompt[:80]
             draw.text((50, 500), words, fill=(50, 50, 50))

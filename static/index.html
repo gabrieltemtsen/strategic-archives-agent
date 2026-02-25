@@ -125,6 +125,13 @@
             <h2><span class="icon">🎛️</span> Control Panel</h2>
             <div class="control-row">
                 <div class="form-group">
+                    <label>Format</label>
+                    <select id="videoFormat" onchange="updateContentTypes()">
+                        <option value="long">📺 Video (Long)</option>
+                        <option value="short">📱 Short</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>Content Type</label>
                     <select id="contentType">
                         <option value="">Auto (Random)</option>
@@ -240,6 +247,28 @@
         let currentJobId = null;
         let eventSource = null;
         let previewInterval = null;
+        // ─── Format Switcher ──────────────────────────────────────
+        function updateContentTypes() {
+            const format = document.getElementById('videoFormat').value;
+            const select = document.getElementById('contentType');
+            const btn = document.getElementById('triggerBtn');
+
+            if (format === 'short') {
+                select.innerHTML = `
+                    <option value="">Auto (Random)</option>
+                    <option value="short_fact">⚡ Quick Fact</option>
+                    <option value="short_story">🌙 Micro Story</option>
+                `;
+                btn.textContent = '📱 Generate Short';
+            } else {
+                select.innerHTML = `
+                    <option value="">Auto (Random)</option>
+                    <option value="bedtime_stories">Bedtime Story</option>
+                    <option value="fun_facts">Fun Facts</option>
+                `;
+                btn.textContent = '🚀 Generate Video';
+            }
+        }
 
         // ─── Trigger Job ────────────────────────────────────────
         async function triggerJob() {
@@ -249,6 +278,7 @@
 
             const contentType = document.getElementById('contentType').value;
             const language = document.getElementById('language').value;
+            const videoFormat = document.getElementById('videoFormat').value;
 
             try {
                 const res = await fetch('/api/jobs/trigger', {
@@ -256,7 +286,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         content_type: contentType || null,
-                        language: language || null
+                        language: language || null,
+                        format: videoFormat
                     })
                 });
                 const data = await res.json();

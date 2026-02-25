@@ -81,6 +81,66 @@ Return a JSON object with:
 }}
 """
 
+# ─── SHORTS PROMPTS ────────────────────────────────────────────────
+
+SHORT_FACT_PROMPT = """
+You are creating a YouTube Shorts script — a SINGLE amazing fact for kids aged {age_range}.
+This will be a vertical video (9:16) lasting 30-60 seconds MAX.
+
+Topic: {topic}
+Language: {language}
+
+Requirements:
+- ONE mind-blowing fact, explained simply
+- Start with a hook: "Did you know...?" or "Here's something CRAZY!"
+- Keep it to 150-250 words total (30-60 seconds of speech)
+- End with a fun call-to-action: "Follow for more!" or "Like if you learned something!"
+- Make it punchy, fast-paced, enthusiastic
+- No scary or adult content
+
+Return a JSON object with:
+{{
+  "title": "Short, catchy title with emoji (max 80 chars)",
+  "description": "1 sentence YouTube description",
+  "script": "Full short script text",
+  "tags": ["tag1", "tag2", ...],
+  "thumbnail_prompt": "Detailed prompt for vertical thumbnail image",
+  "scene_prompts": ["prompt1", "prompt2", "prompt3"],  // EXACTLY 3-5 image prompts for vertical scenes
+  "language": "{language}",
+  "content_type": "short_fact",
+  "format": "short"
+}}
+"""
+
+SHORT_STORY_PROMPT = """
+You are creating a YouTube Shorts script — a MICRO bedtime story for kids aged {age_range}.
+This will be a vertical video (9:16) lasting 30-60 seconds MAX.
+
+Theme: {theme}
+Language: {language}
+
+Requirements:
+- Ultra-short story: setup → twist/lesson → cozy ending
+- Keep it to 150-250 words total (30-60 seconds of speech)
+- Simple vocabulary, soothing tone
+- End on a peaceful, sleepy note
+- No scary elements
+
+Return a JSON object with:
+{{
+  "title": "Short, catchy title with emoji (max 80 chars)",
+  "description": "1 sentence YouTube description",
+  "script": "Full micro story text",
+  "moral": "One-line moral",
+  "tags": ["tag1", "tag2", ...],
+  "thumbnail_prompt": "Detailed prompt for vertical thumbnail image",
+  "scene_prompts": ["prompt1", "prompt2", "prompt3", "prompt4"],  // EXACTLY 3-5 image prompts
+  "language": "{language}",
+  "content_type": "short_story",
+  "format": "short"
+}}
+"""
+
 SUPPORTED_LANGUAGES = {
     "en": "English",
     "fr": "French",
@@ -251,32 +311,91 @@ class ScriptGenerator:
         result["language_code"] = language
         return result
 
+    def generate_short_fact(
+        self,
+        topic: Optional[str] = None,
+        language: str = "en"
+    ) -> dict:
+        """Generate a short fact script for YouTube Shorts."""
+        if not topic:
+            topic = random.choice(FUN_FACT_TOPICS)
+
+        lang_name = SUPPORTED_LANGUAGES.get(language, "English")
+        facts_config = self.content_config.get("fun_facts", {})
+
+        prompt = SHORT_FACT_PROMPT.format(
+            age_range=facts_config.get("target_age", "4-10"),
+            topic=topic,
+            language=lang_name,
+        )
+
+        logger.info(f"Generating short fact: '{topic}' in {lang_name}")
+        result = self._call_gemini(prompt)
+        result["topic"] = topic
+        result["language_code"] = language
+        result["format"] = "short"
+        return result
+
+    def generate_short_story(
+        self,
+        theme: Optional[str] = None,
+        language: str = "en"
+    ) -> dict:
+        """Generate a micro bedtime story for YouTube Shorts."""
+        if not theme:
+            theme = random.choice(BEDTIME_THEMES)
+
+        lang_name = SUPPORTED_LANGUAGES.get(language, "English")
+        story_config = self.content_config.get("bedtime_stories", {})
+
+        prompt = SHORT_STORY_PROMPT.format(
+            age_range=story_config.get("target_age", "3-8"),
+            theme=theme,
+            language=lang_name,
+        )
+
+        logger.info(f"Generating short story: '{theme}' in {lang_name}")
+        result = self._call_gemini(prompt)
+        result["theme"] = theme
+        result["language_code"] = language
+        result["format"] = "short"
+        return result
+
     def generate(
         self,
         content_type: Optional[str] = None,
         language: Optional[str] = None,
+        video_format: Optional[str] = None,
         **kwargs
     ) -> dict:
         """
         Main entry point. Auto-picks content type and language if not specified.
-        content_type: 'bedtime_story' | 'fun_facts' | None (random)
+        content_type: 'bedtime_story' | 'fun_facts' | 'short_fact' | 'short_story' | None
+        video_format: 'long' | 'short' | None
         """
         content_types = self.content_config.get("types", ["bedtime_stories", "fun_facts"])
         languages = self.content_config.get("languages", {})
 
-        if not content_type:
-            content_type = random.choice(content_types)
-
         if not language:
             supported = languages.get("supported", ["en"])
-            # Weight English and French higher for broader reach
             weighted = ["en"] * 3 + ["fr"] * 2 + [l for l in supported if l not in ["en", "fr"]]
             language = random.choice(weighted)
+
+        # If format is "short", pick a shorts content type
+        if video_format == "short":
+            if not content_type or content_type not in ("short_fact", "short_story"):
+                content_type = random.choice(["short_fact", "short_story"])
+        elif not content_type:
+            content_type = random.choice(content_types)
 
         if content_type in ("bedtime_stories", "bedtime_story"):
             return self.generate_bedtime_story(language=language, **kwargs)
         elif content_type in ("fun_facts",):
             return self.generate_fun_facts(language=language, **kwargs)
+        elif content_type == "short_fact":
+            return self.generate_short_fact(language=language, **kwargs)
+        elif content_type == "short_story":
+            return self.generate_short_story(language=language, **kwargs)
         else:
             logger.warning(f"Unknown content type '{content_type}', defaulting to bedtime story")
             return self.generate_bedtime_story(language=language)

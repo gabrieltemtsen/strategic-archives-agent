@@ -1,0 +1,11 @@
+.git
+.env
+*.log
+output/
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.youtube_token.pkl
+client_secret.json

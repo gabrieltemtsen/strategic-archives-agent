@@ -1,6 +1,7 @@
 """
 Strategic Archives Agent - Multi-Channel Orchestrator
-Supports: kids, horror, african folklore, motivational channels
+Channels driven by ACTIVE_CHANNELS env var.
+Flow: Pick Channel → Pick Type → Generate Script → Approve → Voice → Visuals → Compile → Upload
 """
 
 import os
@@ -33,31 +34,6 @@ def load_config(path: str = "config/config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def get_channel_config(config: dict, channel_key: str) -> dict:
-    """Get a specific channel's config. Falls back to default_channel."""
-    channels = config.get("channels", {})
-    if channel_key not in channels:
-        default = config.get("app", {}).get("default_channel", "kids_universe")
-        logger.warning(f"Channel '{channel_key}' not found — using '{default}'")
-        channel_key = default
-    ch = channels[channel_key].copy()
-    ch["_key"] = channel_key
-    ch["_timezone"] = config.get("app", {}).get("timezone", "Africa/Lagos")
-    # Resolve YouTube channel ID from env var
-    env_key = f"YOUTUBE_CHANNEL_ID_{channel_key.upper()}"
-    ch["_youtube_channel_id"] = os.getenv(env_key, ch.get("youtube_channel_id", ""))
-    return ch
-
-
-def get_active_channels(config: dict) -> list:
-    """Return list of (key, channel_config) for all active channels."""
-    return [
-        (key, get_channel_config(config, key))
-        for key, ch in config.get("channels", {}).items()
-        if ch.get("active", False)
-    ]
-
-
 def cleanup_job_files(job_id: str, output_dir: str = "./output"):
     output = Path(output_dir)
     for pattern in [f"{job_id}_scene_*.png", f"{job_id}_audio*.mp3",
@@ -73,42 +49,75 @@ def run_daily_job(
     language: Optional[str] = None,
     dry_run: bool = False
 ):
-    """Main pipeline: Generate → Approve → Voice → Visuals → Compile → Upload"""
+    """
+    Full pipeline:
+    Pick Channel → Pick Type → Generate → Approve → TTS → Visuals → Compile → Upload
+    """
     from src.script_gen import ScriptGenerator
     from src.tts import TTSEngine
     from src.visuals import VisualsGenerator
     from src.video import VideoCompiler
     from src.upload import YouTubeUploader
     from src.approval import TelegramApproval
+    from src.channel_loader import load_active_channels
 
-    # Resolve channel
-    channel_key = channel_key or config.get("app", {}).get("default_channel", "kids_universe")
-    channel = get_channel_config(config, channel_key)
-
-    job_id = f"{channel_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    approval = TelegramApproval(config)
     output_dir = os.getenv("OUTPUT_DIR", "./output")
     assets_dir = os.getenv("ASSETS_DIR", "./assets")
 
-    approval = TelegramApproval(config)
+    # ── 0a. Load channels from ACTIVE_CHANNELS env ────────────────
+    try:
+        active_channels = load_active_channels(config)
+        logger.info(f"Active channels: {list(active_channels.keys())}")
+    except ValueError as e:
+        logger.error(str(e))
+        approval.notify(f"❌ Channel config error:\n{e}")
+        return
+
+    # ── 0b. Channel selection ─────────────────────────────────────
+    if channel_key and channel_key in active_channels:
+        # Explicit override (e.g. from scheduler)
+        channel = active_channels[channel_key]
+        logger.info(f"Channel override → {channel_key}")
+    elif len(active_channels) == 1:
+        # Only one active — skip the picker
+        channel_key = list(active_channels.keys())[0]
+        channel = active_channels[channel_key]
+    else:
+        # Let user pick via Telegram (or CLI fallback)
+        channel_key = approval.pick_channel(active_channels)
+        if not channel_key:
+            logger.warning("No channel selected — aborting")
+            return
+        channel = active_channels[channel_key]
+
+    # ── 0c. Content type selection ────────────────────────────────
+    if not content_type:
+        content_type = approval.pick_content_type(channel)
+        # None means random — ScriptGenerator will pick
+
+    job_id = f"{channel_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
     approval.notify(
-        f"🤖 *{channel['name']}* — starting job\n"
-        f"Channel: `{channel_key}` | Niche: `{channel.get('niche', 'N/A')}`\n"
-        f"Job: `{job_id}`"
+        f"🤖 Starting job for <b>{channel['name']}</b>\n"
+        f"Niche: <i>{channel.get('niche','').replace('_',' ')}</i>\n"
+        f"Type: <i>{content_type or 'random'}</i>\n"
+        f"Job: <code>{job_id}</code>"
     )
 
     logger.info("=" * 60)
-    logger.info(f"Job: {job_id} | Channel: {channel['name']} | Niche: {channel.get('niche')}")
+    logger.info(f"Job: {job_id} | {channel['name']} | {channel.get('niche')}")
     logger.info("=" * 60)
 
     try:
-        # ── 1. Generate Script ────────────────────────────────────────
+        # ── 1. Generate Script ────────────────────────────────────
         logger.info("[1/5] Generating script...")
         gen = ScriptGenerator(channel)
         script_data = gen.generate(content_type=content_type, language=language)
-        logger.info(f"Script: '{script_data['title']}' [{script_data.get('language_code', 'en')}]")
+        logger.info(f"Script: '{script_data['title']}' [{script_data.get('language_code','en')}]")
 
-        # ── 2. Telegram Approval ──────────────────────────────────────
-        logger.info("[2/5] Awaiting approval...")
+        # ── 2. Telegram Script Approval ───────────────────────────
+        logger.info("[2/5] Awaiting script approval...")
         result = approval.send_for_approval(script_data)
 
         if result["status"] == "rejected":
@@ -121,13 +130,13 @@ def run_daily_job(
             return
 
         script_data = result["script_data"]
-        logger.info("Approved ✓")
+        logger.info("Script approved ✓")
 
         if dry_run:
-            approval.notify(f"🧪 *Dry run complete* — `{script_data['title']}`")
+            approval.notify(f"🧪 <b>Dry run done</b> — {script_data['title']}")
             return
 
-        # ── 3. TTS Audio ──────────────────────────────────────────────
+        # ── 3. TTS Voiceover ──────────────────────────────────────
         logger.info("[3/5] Generating voiceover...")
         tts = TTSEngine(channel, output_dir=output_dir)
         audio_path = tts.synthesize(
@@ -136,7 +145,7 @@ def run_daily_job(
             language_code=script_data.get("language_code", "en")
         )
 
-        # ── 4. Scene Images ───────────────────────────────────────────
+        # ── 4. Scene Images ───────────────────────────────────────
         logger.info("[4/5] Generating visuals...")
         vis = VisualsGenerator(channel, output_dir=output_dir)
         scene_prompts = script_data.get("scene_prompts", [])
@@ -150,9 +159,9 @@ def run_daily_job(
             script_data.get("thumbnail_prompt", script_data["title"]), job_id
         )
         if not image_paths:
-            raise RuntimeError("No images generated — cannot compile")
+            raise RuntimeError("No images generated")
 
-        # ── 5a. Compile Video ─────────────────────────────────────────
+        # ── 5a. Compile Video ─────────────────────────────────────
         logger.info("[5a/5] Compiling video...")
         compiler = VideoCompiler(channel, output_dir=output_dir, assets_dir=assets_dir)
         video_path = compiler.compile(
@@ -162,7 +171,7 @@ def run_daily_job(
         info = compiler.get_video_info(video_path)
         logger.info(f"Video: {info['duration']:.0f}s, {info['size_mb']:.1f}MB")
 
-        # ── 5b. Upload to YouTube ─────────────────────────────────────
+        # ── 5b. Upload ────────────────────────────────────────────
         logger.info("[5b/5] Uploading to YouTube...")
         uploader = YouTubeUploader(config, channel)
         upload_result = uploader.upload(
@@ -176,31 +185,33 @@ def run_daily_job(
         )
 
         approval.notify(
-            f"✅ *Uploaded!*\n\n"
-            f"📺 *Channel:* {channel['name']}\n"
-            f"🎬 *Title:* {upload_result['title']}\n"
+            f"✅ <b>Uploaded!</b>\n\n"
+            f"📺 <b>Channel:</b> {channel['name']}\n"
+            f"🎬 <b>Title:</b> {upload_result['title']}\n"
             f"🔗 {upload_result['video_url']}\n"
-            f"📅 *Goes live:* {upload_result.get('scheduled_for', 'N/A')}"
+            f"📅 <b>Goes live:</b> {upload_result.get('scheduled_for', 'N/A')}"
         )
-        logger.info(f"Done: {upload_result['video_url']}")
+        logger.info(f"Done → {upload_result['video_url']}")
 
     except Exception as e:
         logger.error(f"Job failed: {e}", exc_info=True)
-        approval.notify(f"❌ *Job failed* on `{channel['name']}`\n`{str(e)[:200]}`")
+        approval.notify(f"❌ <b>Job failed</b> on {channel.get('name','?')}\n<code>{str(e)[:300]}</code>")
     finally:
         cleanup_job_files(job_id, output_dir=output_dir)
 
 
 def start_scheduler(config: dict):
-    """Schedule all active channels at their configured upload times."""
-    active = get_active_channels(config)
-    if not active:
-        logger.warning("No active channels found in config. Set active: true to enable.")
+    """Schedule each active channel at its own upload_time."""
+    from src.channel_loader import load_active_channels
+    try:
+        active = load_active_channels(config)
+    except ValueError as e:
+        logger.error(f"Scheduler aborted: {e}")
         return
 
-    for key, channel in active:
-        upload_time = channel.get("upload_time", "18:00")
-        logger.info(f"Scheduling '{channel['name']}' at {upload_time} WAT")
+    for key, ch in active.items():
+        upload_time = ch.get("upload_time", "18:00")
+        logger.info(f"Scheduling '{ch['name']}' [{key}] at {upload_time} WAT")
         schedule.every().day.at(upload_time).do(
             run_daily_job, config=config, channel_key=key
         )
@@ -215,15 +226,16 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Strategic Archives Multi-Channel Agent")
-    parser.add_argument("--run-now", action="store_true", help="Run a job immediately")
-    parser.add_argument("--dry-run", action="store_true", help="Stop after approval (no upload)")
-    parser.add_argument("--dashboard", action="store_true", help="Launch web dashboard")
-    parser.add_argument("--channel", default=None,
-                        help="Channel key to run (kids_universe, scary_tales, african_folklore, mind_fuel)")
-    parser.add_argument("--type", default=None, help="Content type override")
-    parser.add_argument("--lang", default=None, help="Language code override")
-    parser.add_argument("--config", default="config/config.yaml")
-    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--run-now",  action="store_true")
+    parser.add_argument("--dry-run",  action="store_true")
+    parser.add_argument("--dashboard", action="store_true")
+    parser.add_argument("--channel",  default=None,
+                        help="Channel key (e.g. kids_universe, ai_tools). "
+                             "If omitted and >1 active channel, Telegram picker is shown.")
+    parser.add_argument("--type",     default=None)
+    parser.add_argument("--lang",     default=None)
+    parser.add_argument("--config",   default="config/config.yaml")
+    parser.add_argument("--port",     type=int, default=None)
 
     args = parser.parse_args()
     config = load_config(args.config)

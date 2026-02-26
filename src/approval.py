@@ -204,6 +204,128 @@ class TelegramApproval:
             time.sleep(2)
         return None
 
+    def pick_channel(self, active_channels: dict) -> Optional[str]:
+        """
+        Step 0 of the flow: ask user to pick a channel.
+        Returns selected channel key, or None on timeout.
+
+        Falls back to CLI prompt if Telegram not configured.
+        """
+        if not self._validated:
+            # CLI fallback
+            print("\n📺 Available channels:")
+            for i, (key, ch) in enumerate(active_channels.items()):
+                emoji = ch.get("emoji", "📺")
+                print(f"  {i+1}. [{key}] {emoji} {ch['name']} — {ch.get('niche', '').replace('_', ' ')}")
+            try:
+                choice = input("\nPick channel number: ").strip()
+                keys = list(active_channels.keys())
+                idx = int(choice) - 1
+                if 0 <= idx < len(keys):
+                    return keys[idx]
+            except (ValueError, IndexError):
+                pass
+            return list(active_channels.keys())[0]
+
+        # Build Telegram inline keyboard — 2 channels per row
+        buttons = []
+        row = []
+        for key, ch in active_channels.items():
+            emoji = ch.get("emoji", "📺")
+            row.append({"text": f"{emoji} {ch['name']}", "callback_data": f"ch:{key}"})
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        channel_list = "\n".join(
+            f"{ch.get('emoji','📺')} <b>{ch['name']}</b> — <i>{ch.get('niche','').replace('_',' ')}</i>"
+            for ch in active_channels.values()
+        )
+        self._send_message(
+            f"🎬 <b>New Video Session</b>\n\n"
+            f"Which channel are we posting to today?\n\n"
+            f"{channel_list}",
+            reply_markup={"inline_keyboard": buttons}
+        )
+
+        logger.info(f"Channel picker sent — waiting for selection...")
+        start = time.time()
+        offset = 0
+
+        while time.time() - start < self.timeout:
+            updates = self._get_updates(offset=offset)
+            for update in updates:
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    cq = update["callback_query"]
+                    data = cq.get("data", "")
+                    self._api("answerCallbackQuery", callback_query_id=cq["id"])
+                    if data.startswith("ch:"):
+                        key = data[3:]
+                        if key in active_channels:
+                            ch = active_channels[key]
+                            self._send_message(
+                                f"{ch.get('emoji','📺')} <b>{ch['name']}</b> selected!\n"
+                                f"Niche: <i>{ch.get('niche','').replace('_',' ')}</i>\n\n"
+                                f"⏳ Generating script..."
+                            )
+                            return key
+            time.sleep(2)
+
+        logger.warning("Channel pick timed out — using default")
+        return list(active_channels.keys())[0]
+
+    def pick_content_type(self, channel: dict) -> Optional[str]:
+        """
+        Optional step: let user pick a content type for the channel,
+        or tap 🎲 Random to let the agent decide.
+        Falls back to None (random) if Telegram not configured.
+        """
+        content_types = channel.get("content", {}).get("types", [])
+        if not content_types or len(content_types) == 1:
+            return content_types[0] if content_types else None
+
+        if not self._validated:
+            return None  # Let agent pick randomly
+
+        # Build keyboard
+        buttons = [[{"text": f"🎲 Random", "callback_data": "ct:random"}]]
+        row = []
+        for ct in content_types:
+            label = ct.replace("_", " ").title()
+            row.append({"text": label, "callback_data": f"ct:{ct}"})
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        ch_name = channel.get("name", "channel")
+        self._send_message(
+            f"📝 <b>Content type for {ch_name}?</b>\n"
+            f"Or let me pick randomly:",
+            reply_markup={"inline_keyboard": buttons}
+        )
+
+        start = time.time()
+        offset = 0
+        while time.time() - start < 120:  # 2 min to pick type
+            updates = self._get_updates(offset=offset)
+            for update in updates:
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    cq = update["callback_query"]
+                    data = cq.get("data", "")
+                    self._api("answerCallbackQuery", callback_query_id=cq["id"])
+                    if data.startswith("ct:"):
+                        ct = data[3:]
+                        return None if ct == "random" else ct
+            time.sleep(2)
+
+        return None  # timeout → random
+
     def notify(self, message: str):
         """Send a simple notification message."""
         if not self._validated:

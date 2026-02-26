@@ -1,7 +1,7 @@
 """
-Script Generator - Uses Gemini API to generate kids video scripts
-Supports: Bedtime Stories, Fun Facts, and extensible content types
-Uses: google-genai SDK (new, replaces deprecated google-generativeai)
+Script Generator - Channel-aware content generation via Gemini
+Supports all channel niches: kids, horror, african folklore, motivational
+Uses: google-genai SDK
 """
 
 import os
@@ -16,386 +16,297 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+GEMINI_MODEL = "gemini-2.0-flash"
+
+# ─── Prompt Templates ────────────────────────────────────────────────────────
 
 BEDTIME_STORY_PROMPT = """
 You are a children's storyteller creating a soothing bedtime story for kids aged {age_range}.
-Write a complete, engaging bedtime story with the following:
-
-Topic/Theme: {theme}
-Language: {language}
-Word count: {word_count_min} - {word_count_max} words
-Tone: {tone}
+Topic/Theme: {theme} | Language: {language} | Words: {word_count_min}-{word_count_max} | Tone: {tone}
 
 Requirements:
 - Begin with a calming, inviting opening
-- Include a gentle moral lesson
-- Use simple, age-appropriate vocabulary
-- Create vivid but peaceful imagery
+- Gentle moral lesson, simple vocabulary, vivid but peaceful imagery
 - End with a sleepy, satisfying conclusion
-- Include natural pause points (marked with [PAUSE])
+- Include natural pause points marked with [PAUSE]
 - No scary elements, violence, or adult themes
 
-Return a JSON object with:
-{{
-  "title": "Story title",
-  "description": "2-3 sentence YouTube description",
-  "script": "Full story text with [PAUSE] markers",
-  "moral": "One-line moral of the story",
-  "tags": ["tag1", "tag2", ...],
-  "thumbnail_prompt": "Detailed prompt for generating thumbnail image",
-  "scene_prompts": ["prompt1", "prompt2", ...],  // 12-15 image prompts for scenes
-  "language": "{language}",
-  "content_type": "bedtime_story"
-}}
+Return JSON:
+{{"title": "...", "description": "2-3 sentence YouTube description",
+  "script": "full story with [PAUSE] markers", "moral": "one-line moral",
+  "tags": ["tag1",...], "thumbnail_prompt": "detailed image prompt",
+  "scene_prompts": ["prompt1",...],
+  "language": "{language}", "content_type": "bedtime_story"}}
 """
 
 FUN_FACTS_PROMPT = """
-You are an enthusiastic kids educator creating an exciting fun facts video for children aged {age_range}.
-Create a fun facts video script about: {topic}
-Language: {language}
-Number of facts: {facts_count}
-Tone: {tone}
+You are an enthusiastic kids educator. Create a fun facts video about: {topic}
+Language: {language} | Facts: {facts_count} | Age: {age_range} | Tone: {tone}
 
 Requirements:
-- Start with an exciting hook/intro
-- Each fact should be surprising and easy to understand
-- Use simple analogies kids can relate to
-- Include "WOW!" moments and enthusiasm
-- Add a fun quiz question at the end
-- Mark each fact with [FACT_START] and [FACT_END]
-- Mark transitions with [TRANSITION]
+- Exciting hook/intro, surprising facts, simple analogies kids relate to
+- Mark each fact with [FACT_START] and [FACT_END], transitions with [TRANSITION]
+- End with a fun quiz question
 
-Return a JSON object with:
-{{
-  "title": "Video title",
-  "description": "2-3 sentence YouTube description",
-  "script": "Full script with markers",
-  "facts": ["fact1", "fact2", ...],  // clean list of facts
-  "quiz_question": "Fun quiz question",
-  "quiz_answer": "Answer",
-  "tags": ["tag1", "tag2", ...],
-  "thumbnail_prompt": "Detailed prompt for generating thumbnail image",
-  "scene_prompts": ["prompt1", "prompt2", ...],  // 12-15 image prompts
-  "language": "{language}",
-  "content_type": "fun_facts"
-}}
+Return JSON:
+{{"title": "...", "description": "...", "script": "full script with markers",
+  "facts": ["fact1",...], "quiz_question": "...", "quiz_answer": "...",
+  "tags": ["tag1",...], "thumbnail_prompt": "...", "scene_prompts": ["prompt1",...],
+  "language": "{language}", "content_type": "fun_facts"}}
 """
 
-# ─── SHORTS PROMPTS ────────────────────────────────────────────────
-
-SHORT_FACT_PROMPT = """
-You are creating a YouTube Shorts script — a SINGLE amazing fact for kids aged {age_range}.
-This will be a vertical video (9:16) lasting 30-60 seconds MAX.
-
-Topic: {topic}
-Language: {language}
+HORROR_STORY_PROMPT = """
+You are a master horror storyteller. Write a chilling {content_subtype} in {language}.
+Theme: {theme} | Words: {word_count_min}-{word_count_max} | Tone: {tone}
 
 Requirements:
-- ONE mind-blowing fact, explained simply
-- Start with a hook: "Did you know...?" or "Here's something CRAZY!"
-- Keep it to 150-250 words total (30-60 seconds of speech)
-- End with a fun call-to-action: "Follow for more!" or "Like if you learned something!"
-- Make it punchy, fast-paced, enthusiastic
-- No scary or adult content
+- Open with an unsettling hook that grabs immediately
+- Build tension gradually, use atmospheric descriptions
+- Include a shocking or ambiguous ending
+- Mark scene breaks with [SCENE_BREAK], tense moments with [TENSION]
+- Suitable for adult audiences — no children's content
 
-Return a JSON object with:
-{{
-  "title": "Short, catchy title with emoji (max 80 chars)",
-  "description": "1 sentence YouTube description",
-  "script": "Full short script text",
-  "tags": ["tag1", "tag2", ...],
-  "thumbnail_prompt": "Detailed prompt for vertical thumbnail image",
-  "scene_prompts": ["prompt1", "prompt2", "prompt3"],  // EXACTLY 3-5 image prompts for vertical scenes
-  "language": "{language}",
-  "content_type": "short_fact",
-  "format": "short"
-}}
+Return JSON:
+{{"title": "...", "description": "...", "script": "full story with markers",
+  "hook": "opening line", "twist": "the twist or ending description",
+  "tags": ["tag1",...], "thumbnail_prompt": "dark, atmospheric image prompt",
+  "scene_prompts": ["dark scene prompt1",...],
+  "language": "{language}", "content_type": "{content_subtype}"}}
 """
 
-SHORT_STORY_PROMPT = """
-You are creating a YouTube Shorts script — a MICRO bedtime story for kids aged {age_range}.
-This will be a vertical video (9:16) lasting 30-60 seconds MAX.
-
-Theme: {theme}
-Language: {language}
+FOLKTALE_PROMPT = """
+You are a master African storyteller bringing ancient wisdom to life.
+Create a {content_subtype} in {language} from {region} Africa.
+Theme: {theme} | Words: {word_count_min}-{word_count_max} | Tone: {tone}
 
 Requirements:
-- Ultra-short story: setup → twist/lesson → cozy ending
-- Keep it to 150-250 words total (30-60 seconds of speech)
-- Simple vocabulary, soothing tone
-- End on a peaceful, sleepy note
-- No scary elements
+- Open with a traditional storytelling phrase appropriate to the culture
+- Weave in authentic cultural elements, proverbs, or spiritual beliefs
+- Characters can be humans, animals, spirits, or deities
+- Include a moral or cultural wisdom takeaway
+- Mark story sections with [SCENE] and proverbs with [PROVERB]
+- Use rich, rhythmic language that echoes oral tradition
 
-Return a JSON object with:
-{{
-  "title": "Short, catchy title with emoji (max 80 chars)",
-  "description": "1 sentence YouTube description",
-  "script": "Full micro story text",
-  "moral": "One-line moral",
-  "tags": ["tag1", "tag2", ...],
-  "thumbnail_prompt": "Detailed prompt for vertical thumbnail image",
-  "scene_prompts": ["prompt1", "prompt2", "prompt3", "prompt4"],  // EXACTLY 3-5 image prompts
-  "language": "{language}",
-  "content_type": "short_story",
-  "format": "short"
-}}
+Return JSON:
+{{"title": "...", "description": "...", "script": "full story with markers",
+  "moral": "cultural wisdom", "proverb": "relevant African proverb",
+  "culture": "specific culture/ethnic group",
+  "tags": ["tag1",...], "thumbnail_prompt": "african art style image prompt",
+  "scene_prompts": ["african cultural scene prompt1",...],
+  "language": "{language}", "content_type": "{content_subtype}"}}
 """
 
-SUPPORTED_LANGUAGES = {
-    "en": "English",
-    "fr": "French",
-    "yo": "Yoruba",
-    "ha": "Hausa",
-    "ig": "Igbo",
-    "pt": "Portuguese",
-    "es": "Spanish"
+MOTIVATIONAL_PROMPT = """
+You are a powerful motivational storyteller. Create a {content_subtype} in {language}.
+Theme: {theme} | Words: {word_count_min}-{word_count_max} | Tone: {tone}
+
+Requirements:
+- Open with a powerful question or bold statement
+- Tell a compelling story (real or composite) that illustrates the theme
+- Include specific, vivid details — not generic platitudes
+- Build to an emotional climax then a clear actionable takeaway
+- Mark key moments with [KEY_MOMENT] and the lesson with [LESSON]
+
+Return JSON:
+{{"title": "...", "description": "...", "script": "full story with markers",
+  "key_lesson": "one-line takeaway", "call_to_action": "closing CTA",
+  "tags": ["tag1",...], "thumbnail_prompt": "cinematic, inspirational image prompt",
+  "scene_prompts": ["cinematic scene prompt1",...],
+  "language": "{language}", "content_type": "{content_subtype}"}}
+"""
+
+# ─── Random theme/topic pools ─────────────────────────────────────────────────
+
+THEMES = {
+    "bedtime_stories":   ["a little bunny who can't sleep", "a baby elephant learning to fly",
+                          "a star that fell from the sky", "a dragon who only breathes rainbows",
+                          "a child who discovers a magic garden"],
+    "fun_facts":         ["amazing animals", "space and planets", "the deep ocean",
+                          "dinosaurs", "the human body", "insects and bugs",
+                          "volcanoes", "rainforests", "robots", "ancient civilizations"],
+    "horror_story":      ["paranormal", "urban_legends", "supernatural",
+                          "psychological", "folklore horror"],
+    "creepypasta":       ["internet horror", "found footage", "ritual gone wrong",
+                          "haunted place", "cursed object"],
+    "folktale":          ["trickster tales", "animal wisdom", "ancestor spirits",
+                          "hero journey", "moral lesson", "nature spirits"],
+    "myth_legend":       ["orishas", "kings and warriors", "ancient kingdoms",
+                          "sacred rivers", "legendary creatures", "origin stories"],
+    "motivational_story":["overcoming adversity", "self belief", "discipline",
+                          "resilience", "finding purpose", "legacy"],
+    "success_story":     ["entrepreneurs", "athletes", "scientists",
+                          "artists", "everyday heroes"],
 }
 
-BEDTIME_THEMES = [
-    "a little bunny who can't sleep",
-    "a baby elephant learning to use their trunk",
-    "a star that fell from the sky",
-    "a dragon who only breathes rainbow bubbles",
-    "a child who discovers a magic garden",
-    "a bear family preparing for winter",
-    "a lighthouse keeper's daughter and the sea",
-    "a tiny seed growing into a big tree",
-    "a cloud that learns to make rain",
-    "a moon who wanted to see the daytime"
-]
+AFRICAN_REGIONS = ["West African", "East African", "Southern African",
+                   "Central African", "North African", "Pan-African"]
 
-FUN_FACT_TOPICS = [
-    "amazing animals",
-    "space and planets",
-    "the deep ocean",
-    "dinosaurs",
-    "the human body",
-    "insects and bugs",
-    "volcanoes and earthquakes",
-    "rainforests",
-    "robots and technology",
-    "ancient civilizations"
-]
-
-
-GEMINI_MODEL = "gemini-2.5-flash"
+SUPPORTED_LANGUAGES = {
+    "en": "English", "fr": "French", "yo": "Yoruba",
+    "ha": "Hausa", "ig": "Igbo", "pt": "Portuguese", "es": "Spanish"
+}
 
 
 class ScriptGenerator:
-    def __init__(self, config: dict):
-        self.config = config
+    def __init__(self, channel_config: dict):
+        """
+        channel_config: the config for a specific channel
+        e.g. config['channels']['kids_universe']
+        """
+        self.channel_config = channel_config
+        self.content_config = channel_config.get("content", {})
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        self.content_config = config.get("content", {})
 
-    def _call_gemini(self, prompt: str, _retry: int = 0) -> dict:
-        """Call Gemini API and parse JSON response."""
+    def _call_gemini(self, prompt: str) -> dict:
+        """Call Gemini and parse JSON response."""
         try:
             response = self.client.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=prompt + "\n\nIMPORTANT: Return ONLY valid, compact JSON. Keep the script concise. No markdown formatting.",
+                contents=prompt,
                 config=types.GenerateContentConfig(
-                    temperature=0.8,
+                    temperature=0.85,
                     top_p=0.95,
-                    max_output_tokens=32768,
+                    max_output_tokens=4096,
                 )
             )
-            # Extract JSON from response
             text = response.text.strip()
-            # Handle markdown code blocks
-            if text.startswith("```json"):
-                text = text[7:]
-            if text.startswith("```"):
-                text = text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-            # Try direct parse first
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                pass
-
-            # Attempt to repair: fix unescaped newlines inside JSON strings
-            import re
-            repaired = re.sub(r'(?<=": ")(.*?)(?="[,\}])', lambda m: m.group(0).replace('\n', '\\n'), text, flags=re.DOTALL)
-            try:
-                return json.loads(repaired)
-            except json.JSONDecodeError:
-                pass
-
-            # Attempt to repair: truncated JSON — close any open strings/objects
-            if not text.rstrip().endswith('}'):
-                # Try to close the JSON
-                fixed = text.rstrip().rstrip(',')
-                # Count open braces/brackets
-                open_braces = fixed.count('{') - fixed.count('}')
-                open_brackets = fixed.count('[') - fixed.count(']')
-                # Check if we're in an unclosed string
-                in_string = fixed.count('"') % 2 != 0
-                if in_string:
-                    fixed += '"'
-                fixed += ']' * max(0, open_brackets)
-                fixed += '}' * max(0, open_braces)
-                try:
-                    return json.loads(fixed)
-                except json.JSONDecodeError:
-                    pass
-
-            raise json.JSONDecodeError("Could not parse or repair JSON", text[:100], 0)
-
+            if text.startswith("```json"): text = text[7:]
+            if text.startswith("```"):     text = text[3:]
+            if text.endswith("```"):       text = text[:-3]
+            return json.loads(text.strip())
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini response as JSON: {e}")
-            logger.debug(f"Raw response: {response.text[:500]}")
-            if _retry < 2:
-                logger.info(f"Retrying Gemini call (attempt {_retry + 2})...")
-                return self._call_gemini(prompt, _retry=_retry + 1)
+            logger.error(f"Failed to parse Gemini JSON: {e}")
             raise
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
             raise
 
-    def generate_bedtime_story(
-        self,
-        theme: Optional[str] = None,
-        language: str = "en"
-    ) -> dict:
-        """Generate a bedtime story script."""
+    def _pick_language(self) -> tuple[str, str]:
+        """Pick a language code + name based on channel config."""
+        supported = self.content_config.get("languages", {}).get("supported", ["en"])
+        weighted = ["en"] * 3 + ["fr"] * 2 + [l for l in supported if l not in ("en", "fr")]
+        code = random.choice(weighted)
+        return code, SUPPORTED_LANGUAGES.get(code, "English")
+
+    # ── Kids content ─────────────────────────────────────────────────────────
+
+    def generate_bedtime_story(self, theme: Optional[str] = None, language: str = "en") -> dict:
         if not theme:
-            theme = random.choice(BEDTIME_THEMES)
-
+            theme = random.choice(THEMES["bedtime_stories"])
+        cfg = self.content_config.get("bedtime_stories", {})
         lang_name = SUPPORTED_LANGUAGES.get(language, "English")
-        story_config = self.content_config.get("bedtime_stories", {})
-
         prompt = BEDTIME_STORY_PROMPT.format(
-            age_range=story_config.get("target_age", "3-8"),
-            theme=theme,
-            language=lang_name,
-            word_count_min=story_config.get("word_count_min", 800),
-            word_count_max=story_config.get("word_count_max", 1200),
-            tone=story_config.get("tone", "warm, soothing, magical")
+            age_range=cfg.get("target_age", "3-8"), theme=theme, language=lang_name,
+            word_count_min=cfg.get("word_count_min", 800),
+            word_count_max=cfg.get("word_count_max", 1200),
+            tone=cfg.get("tone", "warm, soothing, magical")
         )
-
-        logger.info(f"Generating bedtime story: '{theme}' in {lang_name}")
         result = self._call_gemini(prompt)
-        result["theme"] = theme
-        result["language_code"] = language
+        result.update({"theme": theme, "language_code": language})
         return result
 
-    def generate_fun_facts(
-        self,
-        topic: Optional[str] = None,
-        language: str = "en"
-    ) -> dict:
-        """Generate a fun facts script."""
+    def generate_fun_facts(self, topic: Optional[str] = None, language: str = "en") -> dict:
         if not topic:
-            topic = random.choice(FUN_FACT_TOPICS)
-
+            topic = random.choice(THEMES["fun_facts"])
+        cfg = self.content_config.get("fun_facts", {})
         lang_name = SUPPORTED_LANGUAGES.get(language, "English")
-        facts_config = self.content_config.get("fun_facts", {})
-
         prompt = FUN_FACTS_PROMPT.format(
-            age_range=facts_config.get("target_age", "4-10"),
-            topic=topic,
-            language=lang_name,
-            facts_count=random.randint(
-                facts_config.get("facts_count_min", 10),
-                facts_config.get("facts_count_max", 15)
-            ),
-            tone=facts_config.get("tone", "energetic, curious, fun")
+            age_range=cfg.get("target_age", "4-10"), topic=topic, language=lang_name,
+            facts_count=random.randint(cfg.get("facts_count_min", 10), cfg.get("facts_count_max", 15)),
+            tone=cfg.get("tone", "energetic, curious, fun")
         )
-
-        logger.info(f"Generating fun facts: '{topic}' in {lang_name}")
         result = self._call_gemini(prompt)
-        result["topic"] = topic
-        result["language_code"] = language
+        result.update({"topic": topic, "language_code": language})
         return result
 
-    def generate_short_fact(
-        self,
-        topic: Optional[str] = None,
-        language: str = "en"
-    ) -> dict:
-        """Generate a short fact script for YouTube Shorts."""
-        if not topic:
-            topic = random.choice(FUN_FACT_TOPICS)
+    # ── Horror content ────────────────────────────────────────────────────────
 
-        lang_name = SUPPORTED_LANGUAGES.get(language, "English")
-        facts_config = self.content_config.get("fun_facts", {})
-
-        prompt = SHORT_FACT_PROMPT.format(
-            age_range=facts_config.get("target_age", "4-10"),
-            topic=topic,
-            language=lang_name,
-        )
-
-        logger.info(f"Generating short fact: '{topic}' in {lang_name}")
-        result = self._call_gemini(prompt)
-        result["topic"] = topic
-        result["language_code"] = language
-        result["format"] = "short"
-        return result
-
-    def generate_short_story(
-        self,
-        theme: Optional[str] = None,
-        language: str = "en"
-    ) -> dict:
-        """Generate a micro bedtime story for YouTube Shorts."""
+    def generate_horror_story(self, subtype: str = "horror_story",
+                               theme: Optional[str] = None, language: str = "en") -> dict:
         if not theme:
-            theme = random.choice(BEDTIME_THEMES)
-
+            theme = random.choice(THEMES.get(subtype, THEMES["horror_story"]))
+        cfg = self.content_config.get(subtype, self.content_config.get("horror_story", {}))
         lang_name = SUPPORTED_LANGUAGES.get(language, "English")
-        story_config = self.content_config.get("bedtime_stories", {})
-
-        prompt = SHORT_STORY_PROMPT.format(
-            age_range=story_config.get("target_age", "3-8"),
-            theme=theme,
-            language=lang_name,
+        prompt = HORROR_STORY_PROMPT.format(
+            content_subtype=subtype, theme=theme, language=lang_name,
+            word_count_min=cfg.get("word_count_min", 1000),
+            word_count_max=cfg.get("word_count_max", 1800),
+            tone=cfg.get("tone", "eerie, suspenseful, chilling")
         )
-
-        logger.info(f"Generating short story: '{theme}' in {lang_name}")
         result = self._call_gemini(prompt)
-        result["theme"] = theme
-        result["language_code"] = language
-        result["format"] = "short"
+        result.update({"theme": theme, "language_code": language})
         return result
 
-    def generate(
-        self,
-        content_type: Optional[str] = None,
-        language: Optional[str] = None,
-        video_format: Optional[str] = None,
-        **kwargs
-    ) -> dict:
+    # ── African Folklore ──────────────────────────────────────────────────────
+
+    def generate_folktale(self, subtype: str = "folktale",
+                           theme: Optional[str] = None, language: str = "en") -> dict:
+        if not theme:
+            theme = random.choice(THEMES.get(subtype, THEMES["folktale"]))
+        cfg = self.content_config.get(subtype, self.content_config.get("folktale", {}))
+        lang_name = SUPPORTED_LANGUAGES.get(language, "English")
+        region = random.choice(AFRICAN_REGIONS)
+        prompt = FOLKTALE_PROMPT.format(
+            content_subtype=subtype, theme=theme, language=lang_name, region=region,
+            word_count_min=cfg.get("word_count_min", 900),
+            word_count_max=cfg.get("word_count_max", 1400),
+            tone=cfg.get("tone", "cultural, storytelling, rhythmic")
+        )
+        result = self._call_gemini(prompt)
+        result.update({"theme": theme, "language_code": language, "region": region})
+        return result
+
+    # ── Motivational content ──────────────────────────────────────────────────
+
+    def generate_motivational(self, subtype: str = "motivational_story",
+                               theme: Optional[str] = None, language: str = "en") -> dict:
+        if not theme:
+            theme = random.choice(THEMES.get(subtype, THEMES["motivational_story"]))
+        cfg = self.content_config.get(subtype, self.content_config.get("motivational_story", {}))
+        lang_name = SUPPORTED_LANGUAGES.get(language, "English")
+        prompt = MOTIVATIONAL_PROMPT.format(
+            content_subtype=subtype, theme=theme, language=lang_name,
+            word_count_min=cfg.get("word_count_min", 700),
+            word_count_max=cfg.get("word_count_max", 1200),
+            tone=cfg.get("tone", "inspiring, powerful, uplifting")
+        )
+        result = self._call_gemini(prompt)
+        result.update({"theme": theme, "language_code": language})
+        return result
+
+    # ── Main entry point ──────────────────────────────────────────────────────
+
+    def generate(self, content_type: Optional[str] = None,
+                 language: Optional[str] = None, **kwargs) -> dict:
         """
-        Main entry point. Auto-picks content type and language if not specified.
-        content_type: 'bedtime_story' | 'fun_facts' | 'short_fact' | 'short_story' | None
-        video_format: 'long' | 'short' | None
+        Generate content for this channel.
+        Auto-selects type and language from channel config if not specified.
         """
-        content_types = self.content_config.get("types", ["bedtime_stories", "fun_facts"])
-        languages = self.content_config.get("languages", {})
+        types_pool = self.content_config.get("types", ["bedtime_stories"])
+        if not content_type:
+            content_type = random.choice(types_pool)
 
-        if not language:
-            supported = languages.get("supported", ["en"])
-            weighted = ["en"] * 3 + ["fr"] * 2 + [l for l in supported if l not in ["en", "fr"]]
-            language = random.choice(weighted)
+        lang_code, lang_name = (language, SUPPORTED_LANGUAGES.get(language, "English")) \
+            if language else self._pick_language()
 
-        # If format is "short", pick a shorts content type
-        if video_format == "short":
-            if not content_type or content_type not in ("short_fact", "short_story"):
-                content_type = random.choice(["short_fact", "short_story"])
-        elif not content_type:
-            content_type = random.choice(content_types)
+        logger.info(f"Generating [{content_type}] in {lang_name} for channel: "
+                    f"{self.channel_config.get('name', 'unknown')}")
 
-        if content_type in ("bedtime_stories", "bedtime_story"):
-            return self.generate_bedtime_story(language=language, **kwargs)
-        elif content_type in ("fun_facts",):
-            return self.generate_fun_facts(language=language, **kwargs)
-        elif content_type == "short_fact":
-            return self.generate_short_fact(language=language, **kwargs)
-        elif content_type == "short_story":
-            return self.generate_short_story(language=language, **kwargs)
-        else:
-            logger.warning(f"Unknown content type '{content_type}', defaulting to bedtime story")
-            return self.generate_bedtime_story(language=language)
+        dispatch = {
+            "bedtime_stories": self.generate_bedtime_story,
+            "bedtime_story":   self.generate_bedtime_story,
+            "fun_facts":       self.generate_fun_facts,
+            "horror_story":    lambda **kw: self.generate_horror_story(subtype="horror_story", **kw),
+            "creepypasta":     lambda **kw: self.generate_horror_story(subtype="creepypasta", **kw),
+            "folktale":        lambda **kw: self.generate_folktale(subtype="folktale", **kw),
+            "myth_legend":     lambda **kw: self.generate_folktale(subtype="myth_legend", **kw),
+            "motivational_story": lambda **kw: self.generate_motivational(subtype="motivational_story", **kw),
+            "success_story":   lambda **kw: self.generate_motivational(subtype="success_story", **kw),
+        }
+
+        fn = dispatch.get(content_type)
+        if not fn:
+            logger.warning(f"Unknown content type '{content_type}', defaulting to bedtime_story")
+            fn = self.generate_bedtime_story
+
+        return fn(language=lang_code, **kwargs)

@@ -1,251 +1,37 @@
 app:
   name: "Strategic Archives Agent"
   timezone: "Africa/Lagos"   # WAT = UTC+1
-  default_channel: "kids_universe"
 
-# ─────────────────────────────────────────────────────────────
-# CHANNELS — each entry is a fully self-contained channel config
-# youtube_channel_id: set in .env as YOUTUBE_CHANNEL_ID_<KEY>
-# ─────────────────────────────────────────────────────────────
-channels:
+# Global defaults — channels can override individual fields
+defaults:
+  video:
+    resolution: "1920x1080"
+    fps: 24
+    min_duration: 300    # 5 min
+    max_duration: 600    # 10 min
+    transition: "fade"
 
-  kids_universe:
-    name: "KidsUniverseFirst"
-    handle: "@KidsUniverseFirst"
-    youtube_channel_id: ""          # env: YOUTUBE_CHANNEL_ID_KIDS_UNIVERSE
-    niche: "kids_education"
-    upload_time: "18:00"            # 6pm WAT
-    active: true
+  tts:
+    provider: "gemini"
+    speaking_rate: 0.85
+    pitch: 0.0
+    volume_gain_db: 1.5
 
-    content:
-      types: [bedtime_stories, fun_facts]
-      languages:
-        primary: "en"
-        supported: ["en", "fr", "yo", "ha", "ig", "pt", "es"]
-      video:
-        min_duration: 300
-        max_duration: 600
-        resolution: "1920x1080"
-        fps: 24
-        transition: "fade"
-      bedtime_stories:
-        word_count_min: 800
-        word_count_max: 1200
-        target_age: "3-8"
-        tone: "warm, soothing, magical"
-        themes: [animals, friendship, adventure, nature, magic, family]
-      fun_facts:
-        facts_count_min: 10
-        facts_count_max: 15
-        target_age: "4-10"
-        tone: "energetic, curious, fun"
-        topics: [animals, space, science, history, nature, food, dinosaurs, ocean]
+  visuals:
+    provider: "huggingface"
+    model: "black-forest-labs/FLUX.1-schnell"
+    images_per_video: 14
+    negative_prompt: "blurry, low quality, watermark, text overlay, deformed"
 
-    youtube:
-      category_id: "22"
-      made_for_kids: true
-      privacy_status: "public"
-      default_language: "en"
-      tags: ["kids", "children", "bedtime stories", "fun facts for kids",
-             "educational", "learning", "animated stories", "kids channel"]
+  music:
+    volume: 0.15
+    fade_in: 3
+    fade_out: 5
 
-    tts:
-      provider: "gemini"
-      speaking_rate: 0.85
-      pitch: 2.0
-      volume_gain_db: 2.0
+  youtube:
+    privacy_status: "public"
+    made_for_kids: false
+    category_id: "22"
 
-    visuals:
-      provider: "huggingface"
-      model: "black-forest-labs/FLUX.1-schnell"
-      style: "Pixar-style 3D render, vibrant colors, soft lighting, children's animation, professional studio quality, 4K"
-      negative_prompt: "scary, dark, violent, adult content, realistic, photographic"
-      images_per_video: 15
-
-    music:
-      volume: 0.15
-      fade_in: 3
-      fade_out: 5
-
-  # ───────────────────────────────────────────────────────────
-  scary_tales:
-    name: "ScaryTalesNightly"
-    handle: "@ScaryTalesNightly"
-    youtube_channel_id: ""          # env: YOUTUBE_CHANNEL_ID_SCARY_TALES
-    niche: "horror_stories"
-    upload_time: "21:00"            # 9pm WAT — prime horror viewing time
-    active: false                   # flip to true when channel is created
-
-    content:
-      types: [horror_story, creepypasta]
-      languages:
-        primary: "en"
-        supported: ["en", "fr"]
-      video:
-        min_duration: 480
-        max_duration: 900
-        resolution: "1920x1080"
-        fps: 24
-        transition: "fade"
-      horror_story:
-        word_count_min: 1000
-        word_count_max: 1800
-        tone: "eerie, suspenseful, atmospheric, chilling"
-        themes: [paranormal, urban_legends, supernatural, psychological, folklore]
-      creepypasta:
-        word_count_min: 800
-        word_count_max: 1500
-        tone: "creepy, unsettling, realistic horror"
-        themes: [internet_horror, found_footage, ritual, haunted, cursed_objects]
-
-    youtube:
-      category_id: "22"
-      made_for_kids: false
-      privacy_status: "public"
-      default_language: "en"
-      tags: ["scary stories", "horror", "creepypasta", "scary tales",
-             "horror stories", "spooky", "ghost stories", "scary"]
-
-    tts:
-      provider: "gemini"
-      speaking_rate: 0.80
-      pitch: -2.0                   # Deeper, darker voice
-      volume_gain_db: 1.0
-
-    visuals:
-      provider: "huggingface"
-      model: "black-forest-labs/FLUX.1-schnell"
-      style: "dark atmospheric digital art, moody lighting, horror illustration, cinematic, detailed shadows"
-      negative_prompt: "bright colors, cute, cartoon, children's content, cheerful"
-      images_per_video: 12
-
-    music:
-      volume: 0.20
-      fade_in: 2
-      fade_out: 4
-
-  # ───────────────────────────────────────────────────────────
-  african_folklore:
-    name: "AfricanFolkloreHub"
-    handle: "@AfricanFolkloreHub"
-    youtube_channel_id: ""          # env: YOUTUBE_CHANNEL_ID_AFRICAN_FOLKLORE
-    niche: "african_folktales"
-    upload_time: "17:00"            # 5pm WAT
-    active: false
-
-    content:
-      types: [folktale, myth_legend]
-      languages:
-        primary: "en"
-        supported: ["en", "yo", "ha", "ig", "fr", "pt"]
-      video:
-        min_duration: 420
-        max_duration: 720
-        resolution: "1920x1080"
-        fps: 24
-        transition: "fade"
-      folktale:
-        word_count_min: 900
-        word_count_max: 1400
-        tone: "cultural, storytelling, rich, rhythmic, oral tradition"
-        themes: [trickster_tales, creation_myths, animal_wisdom, ancestor_spirits,
-                 hero_journeys, moral_lessons, nature_spirits]
-      myth_legend:
-        word_count_min: 1000
-        word_count_max: 1600
-        tone: "epic, mythological, reverent, vivid"
-        themes: [orishas, kings_and_warriors, ancient_kingdoms, sacred_rivers,
-                 legendary_creatures, origin_stories]
-
-    youtube:
-      category_id: "22"
-      made_for_kids: false
-      privacy_status: "public"
-      default_language: "en"
-      tags: ["african stories", "african folklore", "yoruba stories", "igbo tales",
-             "hausa stories", "african myths", "african legends", "africa"]
-
-    tts:
-      provider: "gemini"
-      speaking_rate: 0.82
-      pitch: 0.0
-      volume_gain_db: 1.5
-
-    visuals:
-      provider: "huggingface"
-      model: "black-forest-labs/FLUX.1-schnell"
-      style: "African art style, vibrant earth tones, traditional patterns, rich cultural illustration, detailed, cinematic"
-      negative_prompt: "western cartoon, anime, European style, modern urban"
-      images_per_video: 14
-
-    music:
-      volume: 0.18
-      fade_in: 3
-      fade_out: 5
-
-  # ───────────────────────────────────────────────────────────
-  mind_fuel:
-    name: "MindFuelDaily"
-    handle: "@MindFuelDaily"
-    youtube_channel_id: ""          # env: YOUTUBE_CHANNEL_ID_MIND_FUEL
-    niche: "motivational_stories"
-    upload_time: "07:00"            # 7am WAT — morning motivation
-    active: false
-
-    content:
-      types: [motivational_story, success_story]
-      languages:
-        primary: "en"
-        supported: ["en", "fr", "pt"]
-      video:
-        min_duration: 360
-        max_duration: 720
-        resolution: "1920x1080"
-        fps: 24
-        transition: "fade"
-      motivational_story:
-        word_count_min: 700
-        word_count_max: 1200
-        tone: "inspiring, powerful, emotional, uplifting"
-        themes: [overcoming_adversity, success_against_odds, self_belief,
-                 discipline, resilience, purpose, legacy]
-      success_story:
-        word_count_min: 800
-        word_count_max: 1300
-        tone: "factual, inspiring, relatable"
-        themes: [entrepreneurs, athletes, scientists, artists, everyday_heroes]
-
-    youtube:
-      category_id: "22"
-      made_for_kids: false
-      privacy_status: "public"
-      default_language: "en"
-      tags: ["motivational stories", "inspiration", "success stories",
-             "motivation", "mindset", "self improvement", "life lessons"]
-
-    tts:
-      provider: "gemini"
-      speaking_rate: 0.88
-      pitch: -1.0
-      volume_gain_db: 2.0
-
-    visuals:
-      provider: "huggingface"
-      model: "black-forest-labs/FLUX.1-schnell"
-      style: "cinematic photography style, dramatic lighting, inspirational, powerful composition, high contrast, professional"
-      negative_prompt: "cartoon, childish, dark, horror, scary"
-      images_per_video: 13
-
-    music:
-      volume: 0.18
-      fade_in: 3
-      fade_out: 5
-
-# ─────────────────────────────────────────────────────────────
-# SHARED SETTINGS
-# ─────────────────────────────────────────────────────────────
 telegram:
   approval_timeout: 3600
-
-shared_video:
-  parallel_workers: 3

@@ -1,100 +1,135 @@
 """
 Channel Loader
-Reads active channels from ACTIVE_CHANNELS env var (comma-separated keys).
-Resolves each channel's YouTube channel ID from YOUTUBE_CHANNEL_ID_<KEY>.
+Reads all channel info from a single CHANNELS env var (JSON array).
 
-ENV example:
-  ACTIVE_CHANNELS=kids_universe,ai_tools,ai_side_hustles,african_folklore
-  YOUTUBE_CHANNEL_ID_KIDS_UNIVERSE=UCxxxxxxxxxxxxxxxxxx
-  YOUTUBE_CHANNEL_ID_AI_TOOLS=UCxxxxxxxxxxxxxxxxxx
-  YOUTUBE_CHANNEL_ID_AI_SIDE_HUSTLES=UCxxxxxxxxxxxxxxxxxx
-  YOUTUBE_CHANNEL_ID_AFRICAN_FOLKLORE=UCxxxxxxxxxxxxxxxxxx
+Each channel only needs: key, name, youtube_id, niche, upload_time
+The agent infers content style from the niche string via Gemini.
+
+Example env var:
+CHANNELS=[
+  {
+    "key": "kids_universe",
+    "name": "KidsUniverseFirst",
+    "youtube_id": "UCxxxxxxxxxxxxxxxxxx",
+    "niche": "kids education - bedtime stories and fun facts for children aged 3-10",
+    "upload_time": "18:00",
+    "made_for_kids": true,
+    "emoji": "🧒"
+  },
+  {
+    "key": "strategic_archives",
+    "name": "StrategicArchives",
+    "youtube_id": "UCxxxxxxxxxxxxxxxxxx",
+    "niche": "AI tools and workflows for everyday people",
+    "upload_time": "17:00",
+    "emoji": "📺"
+  }
+]
 """
 
 import os
+import json
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-def load_active_channels(config: dict) -> dict[str, dict]:
+def load_channels(config: dict) -> dict[str, dict]:
     """
-    Load active channel configs from ACTIVE_CHANNELS env var.
-
-    Returns: {channel_key: enriched_channel_config}
-    Raises: ValueError if ACTIVE_CHANNELS contains unknown keys.
+    Load channels from CHANNELS env var (JSON array).
+    Returns {key: enriched_channel_dict}
+    Raises ValueError if CHANNELS is missing or invalid.
     """
-    raw = os.getenv("ACTIVE_CHANNELS", "").strip()
-    all_channels = config.get("channels", {})
+    raw = os.getenv("CHANNELS", "").strip()
 
     if not raw:
-        # Fall back to default channel
-        default = config.get("app", {}).get("default_channel", "kids_universe")
-        logger.warning(
-            f"ACTIVE_CHANNELS not set — defaulting to '{default}'. "
-            f"Set ACTIVE_CHANNELS=kids_universe,ai_tools etc. in your env."
+        raise ValueError(
+            "CHANNELS env var not set.\n"
+            "Set it as a JSON array, e.g.:\n"
+            'CHANNELS=[{"key":"kids_universe","name":"KidsUniverseFirst",'
+            '"youtube_id":"UCxxx","niche":"kids education","upload_time":"18:00"}]'
         )
-        raw = default
 
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    try:
+        channels_list = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"CHANNELS env var is not valid JSON: {e}")
+
+    if not isinstance(channels_list, list) or not channels_list:
+        raise ValueError("CHANNELS must be a non-empty JSON array.")
+
+    defaults = config.get("defaults", {})
     active = {}
 
-    for key in keys:
-        if key not in all_channels:
-            logger.warning(
-                f"Channel '{key}' in ACTIVE_CHANNELS not found in config.yaml — skipping. "
-                f"Available: {list(all_channels.keys())}"
-            )
+    for ch in channels_list:
+        key = ch.get("key", "").strip()
+        name = ch.get("name", key)
+        niche = ch.get("niche", "").strip()
+        youtube_id = ch.get("youtube_id", "").strip()
+
+        if not key:
+            logger.warning(f"Skipping channel with no 'key': {ch}")
             continue
-        channel = _enrich(key, all_channels[key], config)
-        active[key] = channel
+        if not niche:
+            logger.warning(f"Channel '{key}' has no niche — Gemini will use generic content")
+
+        enriched = {
+            # Core identity
+            "key":         key,
+            "name":        name,
+            "niche":       niche,
+            "emoji":       ch.get("emoji", "📺"),
+            "upload_time": ch.get("upload_time", "18:00"),
+
+            # YouTube
+            "_youtube_channel_id": youtube_id,
+            "_timezone": config.get("app", {}).get("timezone", "Africa/Lagos"),
+            "youtube": {
+                **defaults.get("youtube", {}),
+                "made_for_kids": ch.get("made_for_kids", False),
+                "category_id": ch.get("category_id", "22"),
+                "default_language": ch.get("language", "en"),
+                "tags": ch.get("tags", []),
+            },
+
+            # Inherit global defaults (channel can override)
+            "tts":     {**defaults.get("tts", {}),     **ch.get("tts", {})},
+            "visuals": {**defaults.get("visuals", {}), **ch.get("visuals", {})},
+            "music":   {**defaults.get("music", {}),   **ch.get("music", {})},
+            "content": {
+                "video":     {**defaults.get("video", {}), **ch.get("video", {})},
+                "languages": {
+                    "primary":   ch.get("language", "en"),
+                    "supported": ch.get("languages", ["en"]),
+                },
+            },
+        }
+
+        if not youtube_id:
+            logger.warning(
+                f"  ⚠️  Channel '{key}' has no youtube_id — "
+                "uploads will use the default authenticated channel."
+            )
+
+        active[key] = enriched
         logger.info(
-            f"  ✅ Loaded channel: [{key}] {channel['name']} "
-            f"({channel['niche']}) @ {channel.get('upload_time', 'N/A')} WAT"
+            f"  ✅ Channel loaded: [{key}] {enriched['emoji']} {name} "
+            f"| niche: \"{niche[:50]}\" | upload: {enriched['upload_time']} WAT"
         )
 
     if not active:
-        raise ValueError(
-            "No valid channels loaded. Check ACTIVE_CHANNELS matches keys in config.yaml."
-        )
+        raise ValueError("No valid channels found in CHANNELS env var.")
 
     return active
 
 
-def _enrich(key: str, channel: dict, config: dict) -> dict:
-    """Add runtime-resolved fields to a channel config."""
-    enriched = channel.copy()
-    enriched["_key"] = key
-
-    # Resolve YouTube channel ID from env
-    env_var = f"YOUTUBE_CHANNEL_ID_{key.upper()}"
-    yt_id = os.getenv(env_var, "").strip()
-    if not yt_id:
-        logger.warning(
-            f"  ⚠️  {env_var} not set for channel '{key}'. "
-            "Upload will use the default authenticated channel."
-        )
-    enriched["_youtube_channel_id"] = yt_id
-
-    # Inherit global timezone
-    enriched["_timezone"] = config.get("app", {}).get("timezone", "Africa/Lagos")
-
-    return enriched
-
-
-def get_channel(config: dict, key: str) -> Optional[dict]:
-    """Get a single channel by key (enriched)."""
-    all_channels = config.get("channels", {})
-    if key not in all_channels:
-        return None
-    return _enrich(key, all_channels[key], config)
-
-
-def list_channel_menu(active_channels: dict) -> str:
-    """Format a readable menu of active channels for Telegram."""
+def get_channel_menu(active_channels: dict) -> str:
+    """Readable menu string for Telegram messages."""
     lines = []
-    for key, ch in active_channels.items():
-        emoji = ch.get("emoji", "📺")
-        lines.append(f"{emoji} *{ch['name']}* — _{ch.get('niche', '').replace('_', ' ')}_")
-    return "\n".join(lines)
+    for ch in active_channels.values():
+        lines.append(
+            f"{ch['emoji']} <b>{ch['name']}</b>\n"
+            f"   <i>{ch['niche'][:80]}</i>"
+        )
+    return "\n\n".join(lines)

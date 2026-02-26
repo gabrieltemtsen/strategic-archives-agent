@@ -2,7 +2,7 @@ app:
   name: "Strategic Archives Agent"
   timezone: "Africa/Lagos"   # WAT = UTC+1
 
-# Global defaults — inherited by every channel loaded from CHANNELS env var
+# Global defaults — channels can override individual fields
 defaults:
   video:
     resolution: "1920x1080"

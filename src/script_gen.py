@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 SUPPORTED_LANGUAGES = {
     "en": "English", "fr": "French", "yo": "Yoruba",

@@ -27,9 +27,15 @@ CLIENT_SECRETS_PATH = "client_secret.json"
 
 
 class YouTubeUploader:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, channel: dict = None):
+        """
+        config: full app config
+        channel: specific channel config (from config['channels']['key'])
+        """
         self.config = config
-        self.yt_config = config.get("youtube", {})
+        # Channel-level youtube config overrides global
+        self.yt_config = (channel or {}).get("youtube", config.get("youtube", {}))
+        self.channel = channel or {}
         self.service = None
 
     def _authenticate(self):
@@ -89,9 +95,11 @@ class YouTubeUploader:
         if not self.service:
             self._authenticate()
 
-        app_config = self.config.get("app", {})
-        upload_time = app_config.get("upload_time", "18:00")
-        tz_name = app_config.get("timezone", "Africa/Lagos")
+        # Channel upload_time takes priority over app-level
+        upload_time = self.channel.get("upload_time") \
+                      or self.config.get("app", {}).get("upload_time", "18:00")
+        tz_name = self.channel.get("_timezone") \
+                  or self.config.get("app", {}).get("timezone", "Africa/Lagos")
 
         # Build tags
         default_tags = self.yt_config.get("tags", [])

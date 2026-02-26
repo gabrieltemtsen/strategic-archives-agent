@@ -62,28 +62,35 @@ class ScriptGenerator:
         self.channel = channel
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    def _call_gemini(self, prompt: str) -> dict:
-        try:
-            response = self.client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.85,
-                    top_p=0.95,
-                    max_output_tokens=4096,
+    def _call_gemini(self, prompt: str, retries: int = 2) -> dict:
+        for attempt in range(retries + 1):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.85,
+                        top_p=0.95,
+                        max_output_tokens=8192,
+                        response_mime_type="application/json",
+                    )
                 )
-            )
-            text = response.text.strip()
-            if text.startswith("```json"): text = text[7:]
-            if text.startswith("```"):     text = text[3:]
-            if text.endswith("```"):       text = text[:-3]
-            return json.loads(text.strip())
-        except json.JSONDecodeError as e:
-            logger.error(f"Gemini JSON parse error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            raise
+                text = response.text.strip()
+                if text.startswith("```json"): text = text[7:]
+                if text.startswith("```"):     text = text[3:]
+                if text.endswith("```"):       text = text[:-3]
+                return json.loads(text.strip())
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parse error (attempt {attempt + 1}): {e}")
+                if attempt < retries:
+                    logger.info("Retrying with stricter JSON instruction...")
+                    prompt = prompt + "\n\nIMPORTANT: Return ONLY valid, complete JSON. No extra text."
+                else:
+                    logger.error("All retries exhausted — JSON still invalid")
+                    raise
+            except Exception as e:
+                logger.error(f"Gemini API error: {e}")
+                raise
 
     def _pick_language(self) -> tuple[str, str]:
         supported = self.channel.get("content", {}).get(

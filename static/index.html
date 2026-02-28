@@ -120,6 +120,14 @@
 
     <main class="main">
 
+        <!-- Channel Picker -->
+        <section class="card" id="channelPickerSection">
+            <h2><span class="icon">📺</span> Select Channel</h2>
+            <div id="channelCards" class="channel-cards">
+                <div class="channel-loading">Loading channels...</div>
+            </div>
+        </section>
+
         <!-- Control Panel -->
         <section class="card control-panel">
             <h2><span class="icon">🎛️</span> Control Panel</h2>
@@ -135,8 +143,6 @@
                     <label>Content Type</label>
                     <select id="contentType">
                         <option value="">Auto (Random)</option>
-                        <option value="bedtime_stories">Bedtime Story</option>
-                        <option value="fun_facts">Fun Facts</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -270,8 +276,54 @@
             }
         }
 
+        // ─── Channel Loader ──────────────────────────────────────
+        let selectedChannelKey = null;
+
+        async function loadChannels() {
+            const container = document.getElementById('channelCards');
+            try {
+                const res = await fetch('/api/channels');
+                const data = await res.json();
+                if (data.error) {
+                    container.innerHTML = `<div class="channel-error">⚠️ ${data.error}</div>`;
+                    return;
+                }
+                container.innerHTML = '';
+                data.channels.forEach((ch, i) => {
+                    const card = document.createElement('div');
+                    card.className = 'channel-card' + (i === 0 ? ' selected' : '');
+                    card.dataset.key = ch.key;
+                    card.innerHTML = `
+                        <div class="channel-card-emoji">${ch.emoji}</div>
+                        <div class="channel-card-name">${ch.name}</div>
+                        <div class="channel-card-niche">${ch.niche || 'No niche set'}</div>
+                        <div class="channel-card-time">🕐 ${ch.upload_time} WAT</div>
+                    `;
+                    card.onclick = () => selectChannel(ch.key);
+                    container.appendChild(card);
+                });
+                // Auto-select first
+                if (data.channels.length > 0) {
+                    selectedChannelKey = data.channels[0].key;
+                }
+            } catch (e) {
+                container.innerHTML = `<div class="channel-error">Failed to load channels: ${e.message}</div>`;
+            }
+        }
+
+        function selectChannel(key) {
+            selectedChannelKey = key;
+            document.querySelectorAll('.channel-card').forEach(c => {
+                c.classList.toggle('selected', c.dataset.key === key);
+            });
+        }
+
         // ─── Trigger Job ────────────────────────────────────────
         async function triggerJob() {
+            if (!selectedChannelKey) {
+                alert('Please select a channel first.');
+                return;
+            }
             const btn = document.getElementById('triggerBtn');
             btn.disabled = true;
             btn.textContent = '⏳ Starting...';
@@ -285,6 +337,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        channel_key: selectedChannelKey,
                         content_type: contentType || null,
                         language: language || null,
                         format: videoFormat
@@ -586,6 +639,7 @@
         }
 
         // ─── Init ──────────────────────────────────────────────
+        loadChannels();
         checkCurrentJob();
         loadHistory();
         loadAnalytics();

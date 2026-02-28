@@ -243,6 +243,19 @@ if __name__ == "__main__":
     if args.dashboard:
         from src.startup import bootstrap
         bootstrap()
+
+        # Start the daily scheduler in a background daemon thread
+        # so it keeps firing even while the dashboard (uvicorn) is running.
+        import threading
+        scheduler_thread = threading.Thread(
+            target=start_scheduler,
+            args=(config,),
+            daemon=True,
+            name="scheduler"
+        )
+        scheduler_thread.start()
+        logger.info("Scheduler thread started alongside dashboard")
+
         from src.dashboard import start_dashboard
         port = args.port or int(os.getenv("PORT", 8000))
         start_dashboard(port=port)

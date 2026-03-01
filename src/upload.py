@@ -22,8 +22,22 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube",
 ]
-TOKEN_PATH = ".youtube_token.pkl"
 CLIENT_SECRETS_PATH = "client_secret.json"
+
+def _token_path_for_channel(channel_key: str) -> str:
+    """Return the token file path for a given channel key.
+    Falls back to legacy .youtube_token.pkl if per-channel file doesn't exist."""
+    if channel_key:
+        per_channel = f".youtube_token_{channel_key}.pkl"
+        if os.path.exists(per_channel):
+            return per_channel
+        logger.warning(
+            f"⚠️  No per-channel token found for '{channel_key}' "
+            f"({per_channel} missing). Falling back to .youtube_token.pkl — "
+            f"video may upload to wrong channel! "
+            f"Run: python scripts/auth_channel.py --channel {channel_key}"
+        )
+    return ".youtube_token.pkl"
 
 
 class YouTubeUploader:
@@ -39,32 +53,36 @@ class YouTubeUploader:
         self.service = None
 
     def _authenticate(self):
-        """Handle OAuth2 authentication."""
+        """Handle OAuth2 authentication using per-channel token."""
+        channel_key = self.channel.get("key") or self.channel.get("_key", "")
+        token_path = _token_path_for_channel(channel_key)
         creds = None
 
-        if os.path.exists(TOKEN_PATH):
-            with open(TOKEN_PATH, "rb") as f:
+        if os.path.exists(token_path):
+            with open(token_path, "rb") as f:
                 creds = pickle.load(f)
 
         if creds and creds.valid:
             pass
         elif creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            with open(TOKEN_PATH, "wb") as f:
+            with open(token_path, "wb") as f:
                 pickle.dump(creds, f)
         else:
             if not os.path.exists(CLIENT_SECRETS_PATH):
                 raise FileNotFoundError(
                     f"YouTube OAuth client secrets not found at '{CLIENT_SECRETS_PATH}'. "
-                    "Download it from Google Cloud Console → APIs & Services → Credentials."
+                    "Download from Google Cloud Console → APIs & Services → Credentials."
                 )
+            logger.info(f"No valid token for '{channel_key}' — starting OAuth flow...")
             flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_PATH, SCOPES)
             creds = flow.run_local_server(port=8080)
-            with open(TOKEN_PATH, "wb") as f:
+            with open(token_path, "wb") as f:
                 pickle.dump(creds, f)
+            logger.info(f"Token saved → {token_path}")
 
         self.service = build("youtube", "v3", credentials=creds)
-        logger.info("YouTube API authenticated ✓")
+        logger.info(f"YouTube API authenticated ✓ (channel: {channel_key or 'default'})")
 
     def _build_schedule_time(self, upload_time: str, tz_name: str) -> str:
         """Convert 'HH:MM' + timezone to RFC3339 UTC publish time (next occurrence)."""
@@ -112,11 +130,23 @@ class YouTubeUploader:
                 title = f"{title} #Shorts"
             all_tags = list(set(all_tags + ["Shorts", "YouTubeShorts", "KidsShorts"]))[:500]
 
+        # Channel-specific hashtags derived from niche
+        niche = self.channel.get("niche", "")
+        if "kids" in niche.lower() or "children" in niche.lower():
+            channel_hashtags = "#KidsVideos #ChildrensContent #EducationalKids"
+        elif "war" in niche.lower() or "history" in niche.lower() or "combat" in niche.lower():
+            channel_hashtags = "#WarHistory #MilitaryHistory #BattleHistory"
+        elif "scary" in niche.lower() or "horror" in niche.lower() or "story" in niche.lower():
+            channel_hashtags = "#ScaryStories #HorrorStories #Creepypasta"
+        elif "coding" in niche.lower() or "ai" in niche.lower() or "developer" in niche.lower():
+            channel_hashtags = "#CodingTutorial #AITools #LearnToCode"
+        else:
+            channel_hashtags = f"#{self.channel.get('name','').replace(' ','')}"
+
         # Build snippet
         snippet = {
-            "title": title[:100],  # YouTube 100 char limit
-            "description": f"{description}\n\n"
-                           f"#KidsVideos #ChildrensContent #EducationalKids"
+            "title": title[:100],
+            "description": f"{description}\n\n{channel_hashtags}"
                            + (" #Shorts" if is_short else ""),
             "tags": all_tags,
             "categoryId": self.yt_config.get("category_id", "22"),

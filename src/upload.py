@@ -53,7 +53,12 @@ class YouTubeUploader:
         self.service = None
 
     def _authenticate(self):
-        """Handle OAuth2 authentication using per-channel token."""
+        """
+        Authenticate using pre-generated per-channel token.
+        On Railway/production: NEVER attempts browser OAuth — fails fast with clear error.
+        To generate tokens: run scripts/auth_channel.py locally, then set
+        YOUTUBE_TOKEN_B64_<CHANNEL_KEY_UPPER> in Railway env vars.
+        """
         channel_key = self.channel.get("key") or self.channel.get("_key", "")
         token_path = _token_path_for_channel(channel_key)
         creds = None
@@ -65,21 +70,23 @@ class YouTubeUploader:
         if creds and creds.valid:
             pass
         elif creds and creds.expired and creds.refresh_token:
+            logger.info(f"Refreshing token for '{channel_key}'...")
             creds.refresh(Request())
             with open(token_path, "wb") as f:
                 pickle.dump(creds, f)
+            logger.info(f"Token refreshed and saved → {token_path}")
         else:
-            if not os.path.exists(CLIENT_SECRETS_PATH):
-                raise FileNotFoundError(
-                    f"YouTube OAuth client secrets not found at '{CLIENT_SECRETS_PATH}'. "
-                    "Download from Google Cloud Console → APIs & Services → Credentials."
-                )
-            logger.info(f"No valid token for '{channel_key}' — starting OAuth flow...")
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_PATH, SCOPES)
-            creds = flow.run_local_server(port=8080)
-            with open(token_path, "wb") as f:
-                pickle.dump(creds, f)
-            logger.info(f"Token saved → {token_path}")
+            # No valid token — cannot do browser OAuth on Railway
+            env_var = f"YOUTUBE_TOKEN_B64_{channel_key.upper()}"
+            raise RuntimeError(
+                f"No valid YouTube token for channel '{channel_key}'.\n"
+                f"  Token file expected: {token_path}\n"
+                f"  Railway env var needed: {env_var}\n\n"
+                f"  Fix:\n"
+                f"  1. Run locally: python scripts/auth_channel.py --channel {channel_key}\n"
+                f"  2. Encode:      base64 -i {token_path} | tr -d '\\n'\n"
+                f"  3. Set in Railway: {env_var} = <encoded output>"
+            )
 
         self.service = build("youtube", "v3", credentials=creds)
         logger.info(f"YouTube API authenticated ✓ (channel: {channel_key or 'default'})")

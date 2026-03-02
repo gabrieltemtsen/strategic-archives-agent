@@ -91,6 +91,22 @@ def _decode_token_value(value: str, token_path: str):
         logger.info(f"✅ Decoded pickle token → {token_path}")
 
 
+def _warn_if_no_refresh(token_path: str, channel_key: str):
+    """Warn if a decoded token has no refresh_token (expires in ~1hr, can't auto-renew)."""
+    try:
+        with open(token_path, "rb") as f:
+            creds = pickle.load(f)
+        if not getattr(creds, "refresh_token", None):
+            logger.warning(
+                f"⚠️  Token for '{channel_key}' has NO refresh_token — "
+                f"will expire in ~1 hour and cannot auto-renew!\n"
+                f"  Fix: re-run locally: python scripts/auth_channel.py --channel {channel_key}\n"
+                f"  (The script now forces offline access to get a refresh token)"
+            )
+    except Exception:
+        pass
+
+
 def _decode_channel_tokens():
     """
     Decode per-channel tokens from YOUTUBE_TOKEN_B64_<CHANNEL_KEY_UPPER>.
@@ -117,6 +133,8 @@ def _decode_channel_tokens():
         try:
             _decode_token_value(value, token_path)
             found.append(key)
+            # Warn if token has no refresh_token (will expire in ~1hr)
+            _warn_if_no_refresh(token_path, key)
         except Exception as e:
             logger.error(f"  ❌ Failed to decode {env_var}: {e}")
             missing.append((key, env_var))

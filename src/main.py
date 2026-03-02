@@ -47,7 +47,8 @@ def run_daily_job(
     channel_key: str = None,
     content_type: Optional[str] = None,
     language: Optional[str] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
+    slot_time: Optional[str] = None,   # e.g. "08:00" — overrides channel upload_time for this run
 ):
     """
     Full pipeline:
@@ -95,6 +96,14 @@ def run_daily_job(
     if not content_type:
         content_type = approval.pick_content_type(channel)
         # None means random — ScriptGenerator will pick
+
+    # ── 0d-pre. Slot time override ────────────────────────────────
+    # When scheduler fires for a specific time slot (e.g. "08:00"), override
+    # channel upload_time so the video is scheduled to go public at that slot.
+    if slot_time:
+        channel = dict(channel)          # shallow copy — don't mutate the original
+        channel["upload_time"] = slot_time
+        logger.info(f"Slot time override → video will publish at {slot_time} WAT")
 
     # ── 0d. Pre-flight YouTube auth check ────────────────────────
     # Validate BEFORE generating anything — no wasted TTS/video work on bad tokens
@@ -260,14 +269,21 @@ def start_scheduler(config: dict):
         )
 
     # ── Schedule jobs ────────────────────────────────────────────
+    total_jobs = 0
     for key, ch in active.items():
-        upload_time = ch.get("upload_time", "18:00")
-        logger.info(f"Scheduling '{ch['name']}' [{key}] at {upload_time} WAT")
-        schedule.every().day.at(upload_time).do(
-            run_daily_job, config=config, channel_key=key
-        )
+        # Support both upload_times (list) and legacy upload_time (string)
+        times = ch.get("upload_times") or [ch.get("upload_time", "18:00")]
+        if isinstance(times, str):
+            times = [t.strip() for t in times.split(",")]
 
-    logger.info(f"{len(active)} channel(s) scheduled. Running...")
+        for t in times:
+            logger.info(f"Scheduling '{ch['name']}' [{key}] at {t} WAT")
+            schedule.every().day.at(t).do(
+                run_daily_job, config=config, channel_key=key, slot_time=t
+            )
+            total_jobs += 1
+
+    logger.info(f"{len(active)} channel(s), {total_jobs} daily job(s) scheduled. Running...")
     while True:
         schedule.run_pending()
         time.sleep(30)

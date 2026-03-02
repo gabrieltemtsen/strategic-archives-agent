@@ -96,6 +96,23 @@ def run_daily_job(
         content_type = approval.pick_content_type(channel)
         # None means random — ScriptGenerator will pick
 
+    # ── 0d. Pre-flight YouTube auth check ────────────────────────
+    # Validate BEFORE generating anything — no wasted TTS/video work on bad tokens
+    logger.info(f"[0/5] Validating YouTube auth for '{channel.get('name')}'...")
+    uploader_check = YouTubeUploader(config, channel)
+    auth_ok, auth_err = uploader_check.validate_auth()
+    if not auth_ok:
+        msg = (
+            f"❌ <b>Auth failed for {channel.get('name','?')}</b> — job aborted.\n\n"
+            f"<code>{auth_err[:400]}</code>\n\n"
+            f"Fix: re-run <code>python scripts/auth_channel.py --channel {channel_key}</code> "
+            f"locally, then update the Railway env var."
+        )
+        logger.error(f"Auth check failed for '{channel_key}': {auth_err}")
+        approval.notify(msg)
+        return
+    logger.info(f"Auth check passed ✓ for '{channel.get('name')}'")
+
     job_id = f"{channel_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
     approval.notify(
@@ -203,12 +220,46 @@ def run_daily_job(
 def start_scheduler(config: dict):
     """Schedule each active channel at its own upload_time."""
     from src.channel_loader import load_active_channels
+    from src.upload import validate_all_channel_auth
+    from src.approval import TelegramApproval
+
     try:
         active = load_active_channels(config)
     except ValueError as e:
         logger.error(f"Scheduler aborted: {e}")
         return
 
+    # ── Startup auth validation ──────────────────────────────────
+    # Check every channel token NOW so Railway logs show auth status at deploy time.
+    # Sends a Telegram summary with any broken channels.
+    logger.info("=" * 60)
+    logger.info("Pre-flight YouTube auth check for all channels...")
+    logger.info("=" * 60)
+    auth_results = validate_all_channel_auth(config, active)
+    broken = [(k, r["error"]) for k, r in auth_results.items() if not r["ok"]]
+    healthy = [k for k, r in auth_results.items() if r["ok"]]
+
+    notifier = TelegramApproval(config)
+    if broken:
+        lines = "\n".join(
+            f"❌ <b>{active[k].get('name', k)}</b>: <code>{(err or '')[:200]}</code>"
+            for k, err in broken
+        )
+        ok_line = f"✅ Healthy: {', '.join(active[k].get('name', k) for k in healthy)}" if healthy else ""
+        notifier.notify(
+            f"⚠️ <b>Startup Auth Warning</b>\n\n"
+            f"{lines}\n\n"
+            f"{ok_line}\n\n"
+            f"Fix: run <code>python scripts/auth_channel.py --channel &lt;key&gt;</code> "
+            f"locally and update Railway env vars."
+        )
+    else:
+        notifier.notify(
+            f"✅ <b>All channels authenticated</b>\n"
+            + "\n".join(f"  • {active[k].get('name', k)}" for k in healthy)
+        )
+
+    # ── Schedule jobs ────────────────────────────────────────────
     for key, ch in active.items():
         upload_time = ch.get("upload_time", "18:00")
         logger.info(f"Scheduling '{ch['name']}' [{key}] at {upload_time} WAT")

@@ -35,6 +35,52 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _parse_channels_json(raw: str) -> list:
+    """
+    Robustly parse the CHANNELS env var value.
+    Handles common Railway edge cases:
+      - Value wrapped in extra quotes: "[...]" → [...]
+      - Escaped inner quotes: [{\"key\":...}] → [{"key":...}]
+      - Double-stringified JSON: "{\"key\":...}" (string containing JSON)
+    """
+    candidates = [raw]
+
+    # Strip outer single or double quotes if present
+    if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
+        candidates.append(raw[1:-1])
+
+    # Unescape backslash-escaped quotes
+    candidates.append(raw.replace('\\"', '"').replace("\\'", "'"))
+    if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
+        candidates.append(raw[1:-1].replace('\\"', '"'))
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            result = json.loads(candidate)
+            # If it parsed as a string, try one more level
+            if isinstance(result, str):
+                result = json.loads(result)
+            if isinstance(result, list):
+                if candidate != raw:
+                    logger.warning(
+                        "CHANNELS env var needed cleanup before parsing — "
+                        "paste the JSON value directly without surrounding quotes."
+                    )
+                return result
+        except json.JSONDecodeError as e:
+            last_error = e
+            continue
+
+    snippet = raw[:200].replace('\n', ' ')
+    raise ValueError(
+        f"CHANNELS env var is not valid JSON: {last_error}\n"
+        f"Received (first 200 chars): {snippet}\n\n"
+        f"Fix: in Railway → Variables → CHANNELS, paste the raw JSON array "
+        f"starting with [ and ending with ] — no surrounding quotes."
+    )
+
+
 def load_channels(config: dict) -> dict[str, dict]:
     """
     Load channels from CHANNELS env var (JSON array).
@@ -51,10 +97,7 @@ def load_channels(config: dict) -> dict[str, dict]:
             '"youtube_id":"UCxxx","niche":"kids education","upload_time":"18:00"}]'
         )
 
-    try:
-        channels_list = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"CHANNELS env var is not valid JSON: {e}")
+    channels_list = _parse_channels_json(raw)
 
     if not isinstance(channels_list, list) or not channels_list:
         raise ValueError("CHANNELS must be a non-empty JSON array.")
@@ -122,6 +165,10 @@ def load_channels(config: dict) -> dict[str, dict]:
         raise ValueError("No valid channels found in CHANNELS env var.")
 
     return active
+
+
+# Alias used by main.py and scheduler
+load_active_channels = load_channels
 
 
 def get_channel_menu(active_channels: dict) -> str:

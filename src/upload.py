@@ -91,6 +91,43 @@ class YouTubeUploader:
         self.service = build("youtube", "v3", credentials=creds)
         logger.info(f"YouTube API authenticated ✓ (channel: {channel_key or 'default'})")
 
+    def validate_auth(self) -> tuple:
+        """
+        Pre-flight auth check. Loads/refreshes the token then makes a real
+        lightweight YouTube API call to confirm the grant is valid.
+
+        Returns:
+            (True, None)            — all good, self.service is ready
+            (False, error_message)  — auth broken, job should be aborted
+        """
+        channel_key = self.channel.get("key") or self.channel.get("_key", "")
+        try:
+            self._authenticate()
+        except RuntimeError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"Auth error for '{channel_key}': {e}"
+
+        # Make a real API call — channels.list is read-only and uses 1 quota unit
+        try:
+            resp = self.service.channels().list(part="id", mine=True).execute()
+            items = resp.get("items", [])
+            if not items:
+                return False, (
+                    f"Token for '{channel_key}' authenticated but returned NO channel — "
+                    f"the grant may be for a different Google account. "
+                    f"Re-run: python scripts/auth_channel.py --channel {channel_key}"
+                )
+            channel_id = items[0].get("id", "?")
+            logger.info(f"✅ Auth valid for '{channel_key}' → YouTube channel ID: {channel_id}")
+            return True, None
+        except Exception as e:
+            return False, (
+                f"Token for '{channel_key}' loaded but API call failed: {e}\n"
+                f"The grant may be revoked or expired. "
+                f"Re-run: python scripts/auth_channel.py --channel {channel_key}"
+            )
+
     def _build_schedule_time(self, upload_time: str, tz_name: str) -> str:
         """Convert 'HH:MM' + timezone to RFC3339 UTC publish time (next occurrence)."""
         tz = pytz.timezone(tz_name)
@@ -236,3 +273,28 @@ class YouTubeUploader:
             "title": title,
             "scheduled_for": publish_at if publish_at else "immediate",
         }
+
+
+def validate_all_channel_auth(config: dict, channels: dict) -> dict:
+    """
+    Validate YouTube auth for every active channel at startup.
+
+    Args:
+        config:   Full app config dict
+        channels: {channel_key: channel_dict} from load_active_channels()
+
+    Returns:
+        {
+          channel_key: {"ok": True/False, "error": str or None}
+        }
+    """
+    results = {}
+    for key, ch in channels.items():
+        uploader = YouTubeUploader(config, ch)
+        ok, err = uploader.validate_auth()
+        results[key] = {"ok": ok, "error": err}
+        if ok:
+            logger.info(f"✅ Auth OK: {ch.get('name', key)}")
+        else:
+            logger.error(f"❌ Auth FAILED: {ch.get('name', key)}\n  {err}")
+    return results

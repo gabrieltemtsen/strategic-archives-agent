@@ -66,10 +66,18 @@ def main():
         sys.exit(1)
 
     print(f"\n🔐 Opening browser for OAuth flow...")
-    print(f"   Sign in with the Google account that owns '{channel_name}'\n")
+    print(f"   Sign in with the Google account that owns '{channel_name}'")
+    print(f"   ⚠️  If asked, click 'Allow' to grant OFFLINE access (needed for refresh token)\n")
 
     flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_PATH, SCOPES)
-    creds = flow.run_local_server(port=8080, open_browser=True)
+    # access_type=offline + prompt=consent forces a refresh_token to be issued
+    # Without this, the token expires in 1 hour and cannot auto-renew
+    creds = flow.run_local_server(
+        port=8080,
+        open_browser=True,
+        access_type="offline",
+        prompt="consent",
+    )
 
     with open(token_path, "wb") as f:
         pickle.dump(creds, f)

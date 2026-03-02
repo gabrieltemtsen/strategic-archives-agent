@@ -95,8 +95,9 @@ def _decode_channel_tokens():
     """
     Decode per-channel tokens from YOUTUBE_TOKEN_B64_<CHANNEL_KEY_UPPER>.
     Falls back to legacy YOUTUBE_TOKEN_B64 → .youtube_token.pkl.
+    Logs clearly which tokens are ready and which are missing.
     """
-    any_found = False
+    found, missing = [], []
 
     # Per-channel tokens
     for key in CHANNEL_KEYS:
@@ -105,19 +106,34 @@ def _decode_channel_tokens():
         value = os.getenv(env_var, "").strip()
 
         if not value:
-            logger.debug(f"{env_var} not set — skipping {token_path}")
+            missing.append((key, env_var))
             continue
 
         if os.path.exists(token_path):
-            logger.debug(f"{token_path} already exists — skipping")
-            any_found = True
+            logger.info(f"  ✅ Token ready (cached): {token_path}")
+            found.append(key)
             continue
 
         try:
             _decode_token_value(value, token_path)
-            any_found = True
+            found.append(key)
         except Exception as e:
-            logger.error(f"Failed to decode {env_var}: {e}")
+            logger.error(f"  ❌ Failed to decode {env_var}: {e}")
+            missing.append((key, env_var))
+
+    # Summary
+    if found:
+        logger.info(f"YouTube tokens ready: {found}")
+    if missing:
+        logger.warning(
+            f"⚠️  Missing YouTube tokens for: {[k for k, _ in missing]}\n"
+            + "\n".join(
+                f"  → Set Railway env var: {ev}\n"
+                f"    Generate with: python scripts/auth_channel.py --channel {k}\n"
+                f"    Then encode:   base64 -i .youtube_token_{k}.pkl | tr -d '\\n'"
+                for k, ev in missing
+            )
+        )
 
     # Legacy fallback
     legacy_value = os.getenv("YOUTUBE_TOKEN_B64", "").strip()
@@ -125,18 +141,18 @@ def _decode_channel_tokens():
         try:
             _decode_token_value(legacy_value, ".youtube_token.pkl")
             logger.warning(
-                "⚠️  Using legacy YOUTUBE_TOKEN_B64 — uploads will go to default channel. "
-                "Run scripts/auth_channel.py for each channel to fix this."
+                "⚠️  Legacy YOUTUBE_TOKEN_B64 decoded → .youtube_token.pkl\n"
+                "    This uploads to your DEFAULT channel only.\n"
+                "    Set per-channel tokens to fix channel targeting."
             )
-            any_found = True
         except Exception as e:
             logger.error(f"Failed to decode YOUTUBE_TOKEN_B64: {e}")
 
-    if not any_found:
-        logger.warning(
-            "⚠️  No YouTube tokens found. Run:\n"
-            "    python scripts/auth_channel.py --channel <key>\n"
-            "  for each channel, then set YOUTUBE_TOKEN_B64_<KEY> in Railway."
+    if not found and not legacy_value:
+        logger.error(
+            "❌ NO YouTube tokens found at all — all uploads will fail.\n"
+            "   Run scripts/auth_channel.py for each channel, then set\n"
+            "   YOUTUBE_TOKEN_B64_<CHANNEL_KEY_UPPER> in Railway."
         )
 
 

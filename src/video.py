@@ -1,11 +1,13 @@
 """
-Video Compiler - Combines images + audio + music + subtitles into final MP4
-Uses FFmpeg and MoviePy with Ken Burns zoom/pan effects
+Video Compiler
+Stitches animated clips (from Higgsfield) + TTS audio into a final MP4.
+Falls back to static image compilation when Higgsfield clips aren't available.
 """
 
 import os
 import logging
-import random
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -13,10 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 class VideoCompiler:
-    def __init__(self, config: dict, output_dir: str = "./output", assets_dir: str = "./assets", video_format: str = "long"):
-        self.config = config
-        self.video_config = config.get("content", {}).get("video", {})
-        self.music_config = config.get("music", {})
+    def __init__(
+        self,
+        channel: dict,
+        output_dir: str = "./output",
+        assets_dir: str = "./assets",
+        video_format: str = "long",
+    ):
+        self.channel = channel
         self.output_dir = Path(output_dir)
         self.assets_dir = Path(assets_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -24,99 +30,113 @@ class VideoCompiler:
 
         if video_format == "short":
             self.width, self.height = 1080, 1920
-            self.max_duration = 59  # YouTube Shorts max
         else:
-            self.resolution = self.video_config.get("resolution", "1920x1080")
-            self.width, self.height = map(int, self.resolution.split("x"))
-            self.max_duration = None
-        self.fps = self.video_config.get("fps", 24)
+            self.width, self.height = 1920, 1080
+        self.fps = 24
 
-    def _get_background_music(self) -> Optional[str]:
-        """Get a random background music file from assets."""
-        music_dir = self.assets_dir / "music"
-        if not music_dir.exists():
-            return None
-        music_files = list(music_dir.glob("*.mp3")) + list(music_dir.glob("*.wav"))
-        return str(random.choice(music_files)) if music_files else None
+    # ── Primary: Clip-based compilation (Higgsfield output) ──────────────────
 
-    def _apply_ken_burns(self, clip, effect_type: str, duration: float):
+    def compile_from_clips(
+        self,
+        clip_paths: List[str],
+        audio_path: str,
+        job_id: str,
+        title: str = "",
+    ) -> str:
         """
-        Apply Ken Burns zoom/pan effect to make still images feel alive.
-        Creates gentle, slow movement over the duration of each scene.
+        Stitch animated video clips + TTS audio into a final MP4.
+
+        Args:
+            clip_paths: List of .mp4 clip paths from Higgsfield
+            audio_path: TTS narration audio (.mp3 or .wav)
+            job_id:     Job identifier
+            title:      Episode title (for logging)
+
+        Returns:
+            Path to the final compiled video
         """
-        import numpy as np
+        logger.info(f"Compiling {len(clip_paths)} clips → final video...")
 
-        w, h = clip.size
+        # 1. Write concat list
+        concat_file = self.output_dir / f"{job_id}_concat.txt"
+        with open(concat_file, "w") as f:
+            for clip in clip_paths:
+                f.write(f"file '{Path(clip).resolve()}'\n")
 
-        # Scale factor: how much to zoom (1.0 = no zoom, 1.15 = 15% zoom)
-        zoom_range = 0.12  # subtle 12% zoom
+        # 2. Concatenate clips (mute original audio — we add TTS instead)
+        raw_video = self.output_dir / f"{job_id}_raw.mp4"
+        concat_cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", str(concat_file),
+            "-an",                          # drop original audio from clips
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                   f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black",
+            str(raw_video),
+        ]
+        self._run(concat_cmd, "Concat clips")
 
-        if effect_type == "zoom_in":
-            def make_frame(get_frame, t):
-                progress = t / duration
-                scale = 1.0 + (zoom_range * progress)
-                frame = get_frame(t)
-                from PIL import Image
-                img = Image.fromarray(frame)
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                # Center crop back to original size
-                left = (new_w - w) // 2
-                top = (new_h - h) // 2
-                img = img.crop((left, top, left + w, top + h))
-                return np.array(img)
-            return clip.transform(make_frame)
+        # 3. Get total video duration
+        video_duration = self._get_duration(str(raw_video))
+        audio_duration = self._get_duration(audio_path)
+        logger.info(f"Video: {video_duration:.1f}s | Audio: {audio_duration:.1f}s")
 
-        elif effect_type == "zoom_out":
-            def make_frame(get_frame, t):
-                progress = t / duration
-                scale = (1.0 + zoom_range) - (zoom_range * progress)
-                frame = get_frame(t)
-                from PIL import Image
-                img = Image.fromarray(frame)
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                left = (new_w - w) // 2
-                top = (new_h - h) // 2
-                img = img.crop((left, top, left + w, top + h))
-                return np.array(img)
-            return clip.transform(make_frame)
+        # 4. Merge TTS audio onto video (loop video if audio is longer)
+        final_path = self.output_dir / f"{job_id}_final.mp4"
+        if audio_duration > video_duration:
+            # Audio longer — loop last clip to fill
+            logger.info("Audio longer than video — looping final clip to fill...")
+            extended = self._extend_video(str(raw_video), audio_duration, job_id)
+            merge_input = extended
+        else:
+            merge_input = str(raw_video)
 
-        elif effect_type == "pan_left":
-            def make_frame(get_frame, t):
-                progress = t / duration
-                frame = get_frame(t)
-                from PIL import Image
-                img = Image.fromarray(frame)
-                scale = 1.0 + zoom_range
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                # Pan from right to left
-                max_offset = new_w - w
-                left = int(max_offset * (1 - progress))
-                top = (new_h - h) // 2
-                img = img.crop((left, top, left + w, top + h))
-                return np.array(img)
-            return clip.transform(make_frame)
+        merge_cmd = [
+            "ffmpeg", "-y",
+            "-i", merge_input,
+            "-i", audio_path,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            str(final_path),
+        ]
+        self._run(merge_cmd, "Merge audio")
 
-        elif effect_type == "pan_right":
-            def make_frame(get_frame, t):
-                progress = t / duration
-                frame = get_frame(t)
-                from PIL import Image
-                img = Image.fromarray(frame)
-                scale = 1.0 + zoom_range
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                # Pan from left to right
-                max_offset = new_w - w
-                left = int(max_offset * progress)
-                top = (new_h - h) // 2
-                img = img.crop((left, top, left + w, top + h))
-                return np.array(img)
-            return clip.transform(make_frame)
+        # 5. Add cinematic colour grade (subtle LUT-style via ffmpeg)
+        graded_path = self.output_dir / f"{job_id}_graded.mp4"
+        grade_cmd = [
+            "ffmpeg", "-y",
+            "-i", str(final_path),
+            "-vf", "eq=contrast=1.05:brightness=0.02:saturation=1.1,"
+                   "unsharp=5:5:0.5:3:3:0.0",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "copy",
+            str(graded_path),
+        ]
+        try:
+            self._run(grade_cmd, "Colour grade")
+            output = str(graded_path)
+        except Exception:
+            logger.warning("Colour grading failed — using ungraded video")
+            output = str(final_path)
 
-        return clip  # No effect
+        # Cleanup temp files
+        for f in [concat_file, raw_video]:
+            try: Path(f).unlink(missing_ok=True)
+            except: pass
+
+        size_mb = Path(output).stat().st_size / (1024 * 1024)
+        logger.info(f"✅ Video compiled: {output} ({size_mb:.1f}MB)")
+        return output
+
+    # ── Legacy: Image-based compilation (Ken Burns fallback) ─────────────────
 
     def compile(
         self,
@@ -124,124 +144,82 @@ class VideoCompiler:
         audio_path: str,
         job_id: str,
         title: str = "",
-        subtitle_text: Optional[str] = None,
     ) -> str:
         """
-        Compile final video from images + audio.
-        Returns path to output MP4 file.
+        Legacy fallback: compile static images with Ken Burns zoom effect.
+        Used when Higgsfield animation is unavailable.
         """
-        from moviepy import (
-            ImageClip, AudioFileClip, CompositeAudioClip,
-            concatenate_videoclips, concatenate_audioclips,
-            vfx, afx
-        )
+        logger.info(f"[Legacy] Compiling {len(image_paths)} images with Ken Burns...")
 
-        output_path = str(self.output_dir / f"{job_id}_final.mp4")
-        logger.info(f"Compiling video: {len(image_paths)} scenes → {output_path}")
+        audio_dur = self._get_duration(audio_path)
+        scene_dur = max(3.0, audio_dur / max(len(image_paths), 1))
 
-        # Load audio to get total duration
-        narration = AudioFileClip(audio_path)
-        total_duration = narration.duration
+        clip_paths = []
+        for i, img in enumerate(image_paths):
+            clip_path = self.output_dir / f"{job_id}_kbclip{i:02d}.mp4"
+            direction = ["in", "out", "left", "right"][i % 4]
+            zoom_filter = self._ken_burns_filter(direction, scene_dur)
+            cmd = [
+                "ffmpeg", "-y", "-loop", "1", "-i", img,
+                "-vf", f"{zoom_filter},scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                       f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black",
+                "-t", str(scene_dur),
+                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+                str(clip_path),
+            ]
+            self._run(cmd, f"Ken Burns clip {i}")
+            clip_paths.append(str(clip_path))
 
-        # Cap duration for shorts
-        if self.max_duration and total_duration > self.max_duration:
-            logger.info(f"Trimming audio from {total_duration:.1f}s to {self.max_duration}s for Shorts")
-            narration = narration.subclipped(0, self.max_duration)
-            total_duration = self.max_duration
+        return self.compile_from_clips(clip_paths, audio_path, job_id, title)
 
-        logger.info(f"Audio duration: {total_duration:.1f}s ({total_duration/60:.1f} min)")
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-        # Calculate duration per image
-        n_images = len(image_paths)
-        time_per_image = total_duration / n_images
-        logger.info(f"~{time_per_image:.1f}s per image across {n_images} images")
-
-        # Ken Burns effect types — cycle through them for variety
-        kb_effects = ["zoom_in", "zoom_out", "pan_left", "pan_right"]
-
-        # Build video clips from images
-        clips = []
-        transition = self.video_config.get("transition", "fade")
-        crossfade_duration = 0.3 if self.video_format == "short" else 1.0
-
-        for i, img_path in enumerate(image_paths):
-            clip = ImageClip(img_path, duration=time_per_image)
-            clip = clip.resized((self.width, self.height))
-
-            # Apply Ken Burns effect — alternate effects for visual variety
-            effect = kb_effects[i % len(kb_effects)]
-            clip = self._apply_ken_burns(clip, effect, time_per_image)
-
-            if transition == "fade" and i > 0:
-                clip = clip.with_effects([vfx.CrossFadeIn(crossfade_duration)])
-
-            clips.append(clip)
-
-        # Concatenate all clips
-        padding = -crossfade_duration if transition == "fade" else 0
-        video = concatenate_videoclips(clips, method="compose", padding=padding)
-        video = video.with_duration(total_duration)
-
-        # Add background music
-        bg_music_path = self._get_background_music()
-        if bg_music_path:
-            try:
-                bg_music = AudioFileClip(bg_music_path)
-                # Loop music if shorter than video
-                if bg_music.duration < total_duration:
-                    loops = int(total_duration / bg_music.duration) + 1
-                    bg_music = concatenate_audioclips([bg_music] * loops)
-                bg_music = bg_music.subclipped(0, total_duration)
-                # Apply volume and fade
-                music_vol = self.music_config.get("volume", 0.15)
-                fade_in = self.music_config.get("fade_in", 3)
-                fade_out = self.music_config.get("fade_out", 5)
-                bg_music = bg_music.with_effects([
-                    afx.MultiplyVolume(music_vol),
-                    afx.AudioFadeIn(fade_in),
-                    afx.AudioFadeOut(fade_out),
-                ])
-                # Mix narration + music
-                final_audio = CompositeAudioClip([narration, bg_music])
-            except Exception as e:
-                logger.warning(f"Background music failed, using narration only: {e}")
-                final_audio = narration
+    def _ken_burns_filter(self, direction: str, duration: float) -> str:
+        frames = int(duration * self.fps)
+        if direction == "in":
+            return f"zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={self.width}x{self.height}:fps={self.fps}"
+        elif direction == "out":
+            return f"zoompan=z='if(lte(zoom,1.0),1.3,max(1.0,zoom-0.0008))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={self.width}x{self.height}:fps={self.fps}"
+        elif direction == "left":
+            return f"zoompan=z='1.2':x='if(gte(x,iw-iw/zoom),iw-iw/zoom,x+1)':y='ih/2-(ih/zoom/2)':d={frames}:s={self.width}x{self.height}:fps={self.fps}"
         else:
-            final_audio = narration
+            return f"zoompan=z='1.2':x='if(lte(x,0),0,x-1)':y='ih/2-(ih/zoom/2)':d={frames}:s={self.width}x{self.height}:fps={self.fps}"
 
-        video = video.with_audio(final_audio)
+    def _extend_video(self, video_path: str, target_duration: float, job_id: str) -> str:
+        """Loop a video to reach target_duration."""
+        out_path = self.output_dir / f"{job_id}_extended.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1", "-i", video_path,
+            "-t", str(target_duration),
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+            str(out_path),
+        ]
+        self._run(cmd, "Extend video")
+        return str(out_path)
 
-        # Write final video with higher quality settings
-        logger.info("Rendering final video (this may take a few minutes)...")
-        video.write_videofile(
-            output_path,
-            fps=self.fps,
-            codec="libx264",
-            audio_codec="aac",
-            audio_bitrate="192k",
-            bitrate="8000k",
-            preset="slow",
-            threads=4,
-            logger=None  # Suppress moviepy progress (use our own logger)
-        )
+    def _get_duration(self, path: str) -> float:
+        """Get media duration in seconds via ffprobe."""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            return float(r.stdout.strip())
+        except Exception:
+            return 0.0
 
-        # Cleanup clips
-        video.close()
-        narration.close()
-        logger.info(f"Video compiled successfully: {output_path}")
-        return output_path
+    def get_video_info(self, path: str) -> dict:
+        duration = self._get_duration(path)
+        size_mb = Path(path).stat().st_size / (1024 * 1024) if Path(path).exists() else 0
+        return {"duration": duration, "size_mb": size_mb}
 
-    def get_video_info(self, video_path: str) -> dict:
-        """Get video metadata using ffprobe."""
-        import subprocess, json
-        result = subprocess.run([
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_format", "-show_streams", video_path
-        ], capture_output=True, text=True)
-        data = json.loads(result.stdout)
-        fmt = data.get("format", {})
-        return {
-            "duration": float(fmt.get("duration", 0)),
-            "size_mb": int(fmt.get("size", 0)) / (1024 * 1024),
-            "format": fmt.get("format_name", ""),
-        }
+    def _run(self, cmd: list, label: str):
+        """Run an FFmpeg command, raising on failure."""
+        logger.debug(f"  FFmpeg [{label}]: {' '.join(cmd[:6])}...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            logger.error(f"FFmpeg [{label}] failed:\n{result.stderr[-500:]}")
+            raise RuntimeError(f"FFmpeg [{label}] failed: {result.stderr[-200:]}")
+        logger.debug(f"  ✅ [{label}] done")

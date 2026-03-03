@@ -24,35 +24,66 @@ SUPPORTED_LANGUAGES = {
 }
 
 MASTER_PROMPT = """
-You are an expert YouTube content creator and scriptwriter.
+You are an expert YouTube content creator, screenwriter, and cinematic director.
 
 Channel niche: {niche}
+Character name: {character_name}
+Character style: {character_style}
 Language: {language}
-Target video length: {min_duration}–{max_duration} seconds (~{word_count_min}–{word_count_max} words of narration)
+Target video length: {min_duration}–{max_duration} seconds
 
-Your task: Write ONE complete, high-quality YouTube video script perfectly suited to this niche.
+Your task: Write ONE complete cinematic YouTube video script — structured like a MOVIE, not a slideshow.
+The video will be animated using AI video generation (Higgsfield + FLUX) so every scene needs cinematic detail.
+
+Scene types you can use:
+- "establishing": Wide cinematic shot of the environment/setting. No character dialogue. Camera moves through the world.
+- "character": The main character ({character_name}) is in the scene speaking/acting. Use for narration + key moments.
+- "action": Dynamic action shot — something is happening (battle, explosion, discovery). High energy.
+- "montage": Quick atmospheric shot used for transitions between major beats.
 
 Guidelines:
-- Open with a strong hook that grabs attention in the first 10 seconds
-- Structure for good retention: hook → build-up → payoff → CTA
-- Match the tone, pacing, and vocabulary to the niche audience
-- Use natural spoken language (this is a voiceover script)
-- Mark natural pauses with [PAUSE] and section breaks with [SECTION]
-- End with a clear call-to-action (like/subscribe/comment prompt)
-- Generate 12–15 scene image prompts that visually match the narration
+- Start with a dramatic establishing shot that sets the world
+- Alternate between establishing, character, and action scenes naturally
+- Each scene should feel like a movie shot — think cinematographer, not slideshow maker
+- The character speaks the narration — write it as their voice
+- Motion prompts MUST describe MOVEMENT: camera direction, character action, environmental motion
+- Keep each scene 5–8 seconds. Total 8–12 scenes.
+- End with a strong call-to-action scene
 
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY a valid JSON object:
 {{
   "title": "Compelling YouTube title (under 70 chars)",
   "description": "2–3 sentence YouTube description with keywords",
-  "content_type": "the type of content you chose (e.g. bedtime_story, tutorial, horror_story, etc.)",
-  "script": "Full narration script with [PAUSE] and [SECTION] markers",
+  "content_type": "e.g. documentary, story, tutorial, horror etc.",
   "tags": ["tag1", "tag2", ...],
-  "thumbnail_prompt": "Detailed prompt for generating an eye-catching thumbnail image",
-  "scene_prompts": ["scene image prompt 1", "scene image prompt 2", ...],
+  "thumbnail_prompt": "Vivid detailed prompt for eye-catching thumbnail, {character_style}",
   "language": "{language}",
-  "language_code": "{language_code}"
+  "language_code": "{language_code}",
+  "scenes": [
+    {{
+      "type": "establishing",
+      "setting": "Brief setting description",
+      "narration": "What the character says during this scene (empty string if none)",
+      "image_prompt": "Detailed FLUX image generation prompt — describe the full scene visually",
+      "motion_prompt": "Cinematic motion description for Higgsfield — describe camera movement + action",
+      "duration": 6
+    }},
+    {{
+      "type": "character",
+      "setting": "Brief setting description",
+      "narration": "Character dialogue/narration for this scene",
+      "image_prompt": "Detailed prompt — MUST include the character ({character_name}) in the scene",
+      "motion_prompt": "Character action + camera movement for Higgsfield",
+      "duration": 7
+    }}
+  ]
 }}
+
+Motion prompt examples:
+- "Slow cinematic dolly push forward through ancient Roman city gates, golden dust particles floating, epic scale"
+- "The General raises his sword dramatically, red cape billowing in the wind, camera slowly pulls back revealing the battlefield"
+- "Camera sweeps low across burning ships, smoke rising, dramatic orchestral feel"
+- "Sunny turns excitedly to face camera, eyes wide with wonder, bright sparkles appear around her"
 """
 
 
@@ -112,36 +143,51 @@ class ScriptGenerator:
                  language: Optional[str] = None,
                  **kwargs) -> dict:
         """
-        Generate a video script for the channel.
-        Niche drives everything — content_type hint is optional.
+        Generate a cinematic video script for the channel.
+        Niche + character drive the output — content_type hint is optional.
         """
+        from src.character_gen import CHANNEL_CHARACTERS
+
         lang_code, lang_name = (
             (language, SUPPORTED_LANGUAGES.get(language, "English"))
             if language else self._pick_language()
         )
-        wc_min, wc_max = self._estimate_word_count()
         video_cfg = self.channel.get("content", {}).get("video", {})
 
         niche = self.channel.get("niche", "general YouTube content")
         if content_type:
             niche = f"{niche} — specifically: {content_type.replace('_', ' ')}"
 
+        channel_key = self.channel.get("key", "strategic_archives")
+        char = CHANNEL_CHARACTERS.get(channel_key, CHANNEL_CHARACTERS["strategic_archives"])
+
         prompt = MASTER_PROMPT.format(
             niche=niche,
+            character_name=char["name"],
+            character_style=char["style"],
             language=lang_name,
             language_code=lang_code,
-            min_duration=video_cfg.get("min_duration", 300),
-            max_duration=video_cfg.get("max_duration", 600),
-            word_count_min=wc_min,
-            word_count_max=wc_max,
+            min_duration=video_cfg.get("min_duration", 60),
+            max_duration=video_cfg.get("max_duration", 90),
         )
 
         logger.info(
             f"Generating script | channel: {self.channel.get('name')} "
-            f"| niche: \"{niche[:60]}\" | lang: {lang_name}"
+            f"| character: {char['name']} | niche: \"{niche[:50]}\" | lang: {lang_name}"
         )
         result = self._call_gemini(prompt)
         result["language_code"] = lang_code
-        result["channel_key"] = self.channel.get("key", "")
+        result["channel_key"] = channel_key
         result["channel_name"] = self.channel.get("name", "")
+
+        # Build legacy scene_prompts list from scenes for backward compat
+        scenes = result.get("scenes", [])
+        result["scene_prompts"] = [s.get("image_prompt", "") for s in scenes]
+
+        # Build full script text from scene narrations for TTS
+        if not result.get("script") and scenes:
+            result["script"] = " ".join(
+                s.get("narration", "") for s in scenes if s.get("narration")
+            )
+
         return result

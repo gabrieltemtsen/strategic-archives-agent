@@ -162,38 +162,72 @@ def run_daily_job(
             approval.notify(f"🧪 <b>Dry run done</b> — {script_data['title']}")
             return
 
+        scenes = script_data.get("scenes", [])
+
         # ── 3. TTS Voiceover ──────────────────────────────────────
-        logger.info("[3/5] Generating voiceover...")
+        logger.info("[3/6] Generating voiceover...")
         tts = TTSEngine(channel, output_dir=output_dir)
+        # Concatenate all scene narrations for a single TTS pass
+        full_script = script_data.get("script") or " ".join(
+            s.get("narration", "") for s in scenes if s.get("narration")
+        )
         audio_path = tts.synthesize(
-            script=script_data["script"],
+            script=full_script,
             job_id=job_id,
             language_code=script_data.get("language_code", "en")
         )
 
         # ── 4. Scene Images ───────────────────────────────────────
-        logger.info("[4/5] Generating visuals...")
-        vis = VisualsGenerator(channel, output_dir=output_dir)
-        scene_prompts = script_data.get("scene_prompts", [])
-        if len(scene_prompts) < 10:
-            base = scene_prompts or [channel.get("visuals", {}).get("style", "cinematic scene")]
-            while len(scene_prompts) < 14:
-                scene_prompts.append(base[len(scene_prompts) % len(base)])
+        logger.info("[4/6] Generating scene images...")
+        from src.character_gen import CharacterGenerator
+        char_gen = CharacterGenerator(channel_key=channel_key, output_dir=output_dir)
+        image_paths = char_gen.generate_all_scenes(scenes, job_id)
 
-        image_paths = vis.generate_scene_images(scene_prompts, job_id)
+        # Generate thumbnail separately
+        from src.visuals import VisualsGenerator
+        vis = VisualsGenerator(channel, output_dir=output_dir)
         thumbnail_path = vis.generate_thumbnail(
             script_data.get("thumbnail_prompt", script_data["title"]), job_id
         )
+
         if not image_paths:
             raise RuntimeError("No images generated")
 
-        # ── 5a. Compile Video ─────────────────────────────────────
-        logger.info("[5a/5] Compiling video...")
+        # ── 5. Animate Scenes (Higgsfield) ────────────────────────
+        logger.info("[5/6] Animating scenes with Higgsfield...")
+        try:
+            from src.scene_animator import SceneAnimator
+            animator = SceneAnimator(output_dir=output_dir)
+            clip_paths = animator.animate_scenes(scenes, image_paths, job_id)
+            logger.info(f"Animated {len(clip_paths)} clips ✓")
+        except Exception as e:
+            logger.warning(f"Higgsfield animation failed: {e} — falling back to Ken Burns")
+            clip_paths = None
+
+        # ── 6a. Compile Video ─────────────────────────────────────
+        logger.info("[6a/6] Compiling video...")
         compiler = VideoCompiler(channel, output_dir=output_dir, assets_dir=assets_dir)
-        video_path = compiler.compile(
-            image_paths=image_paths, audio_path=audio_path,
-            job_id=job_id, title=script_data["title"]
+        if clip_paths:
+            video_path = compiler.compile_from_clips(
+                clip_paths=clip_paths, audio_path=audio_path,
+                job_id=job_id, title=script_data["title"]
+            )
+        else:
+            video_path = compiler.compile(
+                image_paths=image_paths, audio_path=audio_path,
+                job_id=job_id, title=script_data["title"]
+            )
+
+        # ── 6b. Mix Background Music ──────────────────────────────
+        logger.info("[6b/6] Mixing background music...")
+        from src.music_mixer import MusicMixer
+        mixer = MusicMixer(channel_key=channel_key, assets_dir=assets_dir)
+        final_video = mixer.mix(
+            video_path=video_path,
+            output_path=video_path.replace("_graded.mp4", "_final.mp4").replace("_final.mp4", "_final.mp4"),
         )
+        video_path = final_video
+
         info = compiler.get_video_info(video_path)
         logger.info(f"Video: {info['duration']:.0f}s, {info['size_mb']:.1f}MB")
 

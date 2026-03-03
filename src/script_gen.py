@@ -31,6 +31,9 @@ Character name: {character_name}
 Character style: {character_style}
 Language: {language}
 Target video length: {min_duration}–{max_duration} seconds
+Made for kids: {made_for_kids}
+
+{content_rules}
 
 Your task: Write ONE complete cinematic YouTube video script — structured like a MOVIE, not a slideshow.
 The video will be animated using AI video generation (Higgsfield + FLUX) so every scene needs cinematic detail.
@@ -38,7 +41,7 @@ The video will be animated using AI video generation (Higgsfield + FLUX) so ever
 Scene types you can use:
 - "establishing": Wide cinematic shot of the environment/setting. No character dialogue. Camera moves through the world.
 - "character": The main character ({character_name}) is in the scene speaking/acting. Use for narration + key moments.
-- "action": Dynamic action shot — something is happening (battle, explosion, discovery). High energy.
+- "action": Dynamic action shot — something is happening. High energy.
 - "montage": Quick atmospheric shot used for transitions between major beats.
 
 Guidelines:
@@ -85,6 +88,39 @@ Motion prompt examples:
 - "Camera sweeps low across burning ships, smoke rising, dramatic orchestral feel"
 - "Sunny turns excitedly to face camera, eyes wide with wonder, bright sparkles appear around her"
 """
+
+# Per-channel content rules injected into the prompt
+CONTENT_RULES = {
+    "kids": """
+⚠️ STRICT KIDS CONTENT RULES (made_for_kids = true):
+- ONLY generate content suitable for children aged 3–10
+- Topics: fairy tales, fun facts about animals/nature/space, simple science, positive life lessons, bedtime stories
+- NO violence, NO scary content, NO adult themes, NO conflict, NO weapons
+- Language must be simple, warm, encouraging, and age-appropriate
+- Characters must be friendly, safe, and wholesome
+- Every scene must be bright, colorful, and visually joyful
+""",
+    "current_events": """
+⚠️ CURRENT AFFAIRS CONTENT RULES:
+- Focus on CURRENT, ONGOING, or RECENT events (within the last 1–3 years)
+- Topics: ongoing wars (Ukraine-Russia, Middle East, Sudan, etc.), geopolitical tensions,
+  global controversies, international conflicts, political power shifts, economic wars,
+  sanctions, proxy conflicts, NATO/alliances dynamics, emerging threats
+- NO ancient history or medieval battles unless directly relevant to a current situation
+- Be factual, analytical, and journalistic in tone
+- Each video should feel like breaking news meets documentary
+- Always present multiple perspectives — do not take political sides
+""",
+}
+
+
+def _get_content_rules(channel: dict) -> str:
+    if channel.get("made_for_kids"):
+        return CONTENT_RULES["kids"]
+    niche = channel.get("niche", "").lower()
+    if any(w in niche for w in ["war", "conflict", "geopolit", "current", "controversy"]):
+        return CONTENT_RULES["current_events"]
+    return ""  # no special rules for other channels
 
 
 class ScriptGenerator:
@@ -169,6 +205,8 @@ class ScriptGenerator:
             language_code=lang_code,
             min_duration=video_cfg.get("min_duration", 60),
             max_duration=video_cfg.get("max_duration", 90),
+            made_for_kids=str(self.channel.get("made_for_kids", False)).lower(),
+            content_rules=_get_content_rules(self.channel),
         )
 
         logger.info(

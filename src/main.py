@@ -195,13 +195,23 @@ def run_daily_job(
 
         # ── 5. Animate Scenes (Higgsfield) ────────────────────────
         logger.info("[5/6] Animating scenes with Higgsfield...")
+        animator = None
+        clip_paths = None
         try:
             from src.scene_animator import SceneAnimator
             animator = SceneAnimator(output_dir=output_dir)
             clip_paths = animator.animate_scenes(scenes, image_paths, job_id)
             logger.info(f"Animated {len(clip_paths)} clips ✓")
+
+            # Notify if credits ran out mid-batch (fallback was used for some scenes)
+            if getattr(animator, "credits_exhausted", False):
+                approval.notify(
+                    "⚠️ <b>Higgsfield credits exhausted mid-job</b>\n\n"
+                    "Some scenes used Ken Burns fallback. Video still completed.\n"
+                    "Top up at: https://cloud.higgsfield.ai"
+                )
         except Exception as e:
-            logger.warning(f"Higgsfield animation failed: {e} — falling back to Ken Burns")
+            logger.warning(f"Higgsfield unavailable: {e} — falling back to Ken Burns for all scenes")
             clip_paths = None
 
         # ── 6a. Compile Video ─────────────────────────────────────

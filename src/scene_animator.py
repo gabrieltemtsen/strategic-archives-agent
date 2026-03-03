@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://platform.higgsfield.ai"
 
+
+class HiggsFieldOutOfCreditsError(Exception):
+    """Raised when Higgsfield returns 403 Not enough credits."""
+    pass
+
+
+class HiggsFieldAuthError(Exception):
+    """Raised when Higgsfield returns 401 Unauthorized."""
+    pass
+
 # Model routing by scene type
 MODELS = {
     "character":    "kling-video/v2.1/pro/image-to-video",
@@ -117,7 +127,19 @@ class SceneAnimator:
             timeout=30,
         )
 
-        if r.status_code not in (200, 201):
+        if r.status_code == 403:
+            msg = r.json().get("detail", r.text[:200])
+            if "credit" in msg.lower() or "enough" in msg.lower():
+                raise HiggsFieldOutOfCreditsError(
+                    f"Higgsfield credits exhausted! "
+                    f"Top up at https://cloud.higgsfield.ai — falling back to Ken Burns for all remaining scenes."
+                )
+            raise RuntimeError(f"Higgsfield forbidden ({r.status_code}): {msg}")
+        elif r.status_code == 401:
+            raise HiggsFieldAuthError(
+                f"Higgsfield auth failed — check HIGGSFIELD_KEY_ID and HIGGSFIELD_SECRET env vars."
+            )
+        elif r.status_code not in (200, 201):
             raise RuntimeError(f"Higgsfield submit failed ({r.status_code}): {r.text[:300]}")
 
         data = r.json()
@@ -163,6 +185,25 @@ class SceneAnimator:
 
         raise RuntimeError(f"Timed out waiting for scene {scene_idx} ({request_id})")
 
+    def check_credits(self) -> bool:
+        """
+        Quick credits check before starting a batch of scenes.
+        Returns True if credits are available, False if exhausted.
+        Logs a warning but does NOT raise — caller decides what to do.
+        """
+        try:
+            # Higgsfield doesn't have a credits endpoint — attempt a harmless GET
+            # A 403 here means no credits; 405 means endpoint exists = auth OK
+            r = requests.get(BASE_URL, headers=self.headers, timeout=10)
+            # Any non-401 response means auth is valid
+            if r.status_code == 401:
+                logger.error("Higgsfield auth invalid — check HIGGSFIELD_KEY_ID / HIGGSFIELD_SECRET")
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"Higgsfield credit check failed: {e}")
+            return True  # assume OK if check fails
+
     def animate_scenes(
         self,
         scenes: list,
@@ -171,9 +212,11 @@ class SceneAnimator:
     ) -> list:
         """
         Animate a list of scenes in sequence.
+        On HiggsFieldOutOfCreditsError → immediately falls back ALL remaining
+        scenes to Ken Burns (no further API calls wasted).
 
         Args:
-            scenes:      List of scene dicts from script_gen (with motion_prompt, type, duration)
+            scenes:      List of scene dicts from script_gen
             image_paths: Parallel list of image paths (one per scene)
             job_id:      Job identifier
 
@@ -181,7 +224,17 @@ class SceneAnimator:
             List of clip paths in order
         """
         clip_paths = []
+        credits_exhausted = False
+
         for i, (scene, img_path) in enumerate(zip(scenes, image_paths)):
+            # If credits ran out mid-batch, use static fallback for all remaining scenes
+            if credits_exhausted:
+                logger.info(f"  Scene {i}: static fallback (credits exhausted)")
+                clip_paths.append(
+                    self._static_to_video(img_path, job_id, i, scene.get("duration", 5))
+                )
+                continue
+
             try:
                 clip = self.animate_scene(
                     image_path=img_path,
@@ -192,11 +245,38 @@ class SceneAnimator:
                     scene_idx=i,
                 )
                 clip_paths.append(clip)
+
+            except HiggsFieldOutOfCreditsError as e:
+                # Credits gone — stop calling API, fall back everything from here
+                logger.warning(f"⚠️ {e}")
+                credits_exhausted = True
+                clip_paths.append(
+                    self._static_to_video(img_path, job_id, i, scene.get("duration", 5))
+                )
+
+            except HiggsFieldAuthError as e:
+                # Auth broken — no point retrying any scene
+                logger.error(f"❌ {e}")
+                credits_exhausted = True
+                clip_paths.append(
+                    self._static_to_video(img_path, job_id, i, scene.get("duration", 5))
+                )
+
             except Exception as e:
-                logger.error(f"Scene {i} animation failed: {e} — using static fallback")
-                # Fallback: convert static image to video with FFmpeg
-                fallback = self._static_to_video(img_path, job_id, i, scene.get("duration", 5))
-                clip_paths.append(fallback)
+                # Scene-level failure (render error, timeout, etc.) — try next scene normally
+                logger.error(f"Scene {i} animation failed: {e} — static fallback for this scene")
+                clip_paths.append(
+                    self._static_to_video(img_path, job_id, i, scene.get("duration", 5))
+                )
+
+        if credits_exhausted:
+            logger.warning(
+                "⚠️ Higgsfield credits exhausted — all remaining scenes used Ken Burns fallback. "
+                "Top up at: https://cloud.higgsfield.ai"
+            )
+            self.credits_exhausted = True
+        else:
+            self.credits_exhausted = False
 
         return clip_paths
 

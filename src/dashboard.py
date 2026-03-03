@@ -36,6 +36,27 @@ static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Serve output files (images/videos) publicly so Higgsfield can fetch them
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./output")
+
+@app.get("/files/{filename}")
+async def serve_output_file(filename: str):
+    """Serve generated images/videos publicly (needed for Higgsfield image-to-video)."""
+    import os as _os
+    file_path = _os.path.join(OUTPUT_DIR, filename)
+    if not _os.path.exists(file_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="File not found")
+    # Security: only allow image and video files, no path traversal
+    if ".." in filename or "/" in filename:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    ext = filename.lower().rsplit(".", 1)[-1]
+    media_types = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "mp4": "video/mp4", "mp3": "audio/mpeg", "webp": "image/webp"}
+    media_type = media_types.get(ext, "application/octet-stream")
+    return FileResponse(file_path, media_type=media_type)
+
 # Global state
 _current_job_thread: Optional[threading.Thread] = None
 _current_job_id: Optional[str] = None

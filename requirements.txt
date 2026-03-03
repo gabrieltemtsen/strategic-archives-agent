@@ -22,6 +22,9 @@ Pillow>=10.3.0
 # Image generation
 huggingface-hub>=0.23.0
 
+# Movie engine (Higgsfield animation)
+# No extra deps — uses requests (above) + subprocess (stdlib)
+
 # Timezone
 pytz>=2024.1
 

@@ -113,47 +113,88 @@ class VisualsGenerator:
     def _generate_image_gemini(
         self, prompt: str, output_path: str
     ) -> Optional[str]:
-        """Generate image via Gemini generate_content with IMAGE modality."""
+        """
+        Generate image via Imagen 3 (imagen-3.0-generate-002).
+        Falls back to gemini-2.0-flash-exp IMAGE modality if Imagen 3 fails.
+        """
         global _gemini_unavailable
         if _gemini_unavailable:
             return None
 
+        # Map pixel dimensions to Imagen 3 supported aspect ratios
+        if self.img_width > self.img_height:
+            imagen_aspect = "16:9"
+        elif self.img_width < self.img_height:
+            imagen_aspect = "9:16"
+        else:
+            imagen_aspect = "1:1"
+
+        # --- Attempt 1: Imagen 3 (best quality, purpose-built image gen) ---
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+            response = client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio=imagen_aspect,
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                    person_generation="ALLOW_ALL",
+                ),
+            )
+            if response.generated_images:
+                image_bytes = response.generated_images[0].image.image_bytes
+                with open(output_path, "wb") as f:
+                    f.write(image_bytes)
+                logger.info(f"Imagen 3 image saved: {output_path}")
+                return output_path
+            logger.warning("Imagen 3 returned no images")
+
+        except Exception as e:
+            err_str = str(e).lower()
+            logger.warning(f"Imagen 3 failed: {e}")
+            if any(x in err_str for x in ("quota", "429", "resource_exhausted")):
+                # Quota hit — disable for this batch
+                _gemini_unavailable = True
+                logger.warning("Gemini quota exceeded, disabling for this batch")
+                return None
+
+        # --- Attempt 2: gemini-2.0-flash-exp with IMAGE modality ---
         try:
             from google import genai
             from google.genai import types
             from PIL import Image
 
             client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
             response = client.models.generate_content(
-                model="gemini-2.5-flash-image",
+                model="gemini-2.0-flash-exp",
                 contents=f"Generate an image: {prompt}",
                 config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                )
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
             )
-
-            # Extract image from response parts
             for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
+                if hasattr(part, "inline_data") and part.inline_data:
                     img_data = part.inline_data.data
                     image = Image.open(io.BytesIO(img_data))
                     image = image.resize((self.img_width, self.img_height), Image.LANCZOS)
                     image.save(output_path, "PNG")
-                    logger.info(f"Gemini image saved: {output_path}")
+                    logger.info(f"Gemini flash image saved: {output_path}")
                     return output_path
-
-            logger.warning("Gemini returned no image data in response")
-            return None
+            logger.warning("Gemini flash returned no image data")
 
         except Exception as e:
-            logger.error(f"Gemini image gen failed: {e}")
-            # If the model itself is unavailable, stop trying for this batch
-            err_str = str(e)
-            if "404" in err_str or "not found" in err_str.lower() or "not supported" in err_str.lower():
+            logger.error(f"Gemini flash image gen also failed: {e}")
+            err_str = str(e).lower()
+            if any(x in err_str for x in ("404", "not found", "not supported", "invalid")):
                 _gemini_unavailable = True
                 logger.warning("Gemini image model unavailable, disabling for this batch")
-            return None
+
+        return None
 
     def _generate_fallback_image(
         self, scene_prompt: str, output_path: str, index: int

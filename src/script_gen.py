@@ -8,6 +8,7 @@ import os
 import json
 import random
 import logging
+import time
 from typing import Optional
 from google import genai
 from google.genai import types
@@ -123,6 +124,60 @@ def _get_content_rules(channel: dict) -> str:
     return ""  # no special rules for other channels
 
 
+class GeminiQuotaExceededError(RuntimeError):
+    pass
+
+
+def _fallback_script(channel: dict, lang_code: str, lang_name: str, niche: str) -> dict:
+    """Ultra-simple fallback when Gemini is down/out of quota.
+
+    This keeps the pipeline alive (so we can still generate + upload videos) but quality
+    will be lower than Gemini.
+    """
+    from src.character_gen import CHANNEL_CHARACTERS
+
+    channel_key = channel.get("key", "strategic_archives")
+    char = CHANNEL_CHARACTERS.get(channel_key, CHANNEL_CHARACTERS["strategic_archives"])
+    title = f"{niche.title()[:55]} — Quick Explained"
+
+    scenes = []
+    base_settings = [
+        "wide cinematic overview of the topic",
+        "close-up character explanation",
+        "simple illustrative example",
+        "summary and key takeaway",
+    ]
+    for i, setting in enumerate(base_settings):
+        scene_type = "establishing" if i == 0 else "character"
+        narration = (
+            f"Hi, I’m {char['name']}. Today we’ll learn about {niche}. "
+            f"Here’s the key idea in simple terms." if i == 1 else
+            (f"Example: imagine this happening in real life — that’s how {niche} works." if i == 2 else
+             (f"Let’s recap the main points and what you should remember about {niche}." if i == 3 else ""))
+        )
+        scenes.append({
+            "type": scene_type,
+            "setting": setting,
+            "narration": narration,
+            "image_prompt": f"{char['style']}. {setting}. theme: {niche}. cinematic lighting, high quality",
+            "motion_prompt": "Slow cinematic dolly push in, gentle parallax, subtle character motion",
+            "duration": 7,
+        })
+
+    return {
+        "title": title,
+        "description": f"A quick breakdown of {niche}.",
+        "content_type": "explainer",
+        "tags": ["explained", "education", niche.replace(" ", "-")[:25]],
+        "thumbnail_prompt": f"{char['style']}. Bold title text: {niche}. bright, high contrast, clean composition",
+        "language": lang_name,
+        "language_code": lang_code,
+        "scenes": scenes,
+        "scene_prompts": [s["image_prompt"] for s in scenes],
+        "script": " ".join(s.get("narration", "") for s in scenes if s.get("narration")),
+    }
+
+
 class ScriptGenerator:
     def __init__(self, channel: dict):
         """channel: enriched channel dict from channel_loader.load_channels()"""
@@ -130,6 +185,12 @@ class ScriptGenerator:
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     def _call_gemini(self, prompt: str, retries: int = 2) -> dict:
+        """Call Gemini with basic retries.
+
+        Notes:
+        - 429 RESOURCE_EXHAUSTED often means either rate-limit OR hard quota/billing exhaustion.
+          Retries only help for rate-limit. If quota is exhausted we raise a clear error.
+        """
         for attempt in range(retries + 1):
             try:
                 response = self.client.models.generate_content(
@@ -138,24 +199,45 @@ class ScriptGenerator:
                     config=types.GenerateContentConfig(
                         temperature=0.85,
                         top_p=0.95,
-                        max_output_tokens=8192,
+                        # Keep this sane to reduce cost/quota burn.
+                        max_output_tokens=int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4096")),
                         response_mime_type="application/json",
                     )
                 )
                 text = response.text.strip()
-                if text.startswith("```json"): text = text[7:]
-                if text.startswith("```"):     text = text[3:]
-                if text.endswith("```"):       text = text[:-3]
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.startswith("```"):
+                    text = text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
                 return json.loads(text.strip())
+
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON parse error (attempt {attempt + 1}): {e}")
                 if attempt < retries:
                     logger.info("Retrying with stricter JSON instruction...")
                     prompt = prompt + "\n\nIMPORTANT: Return ONLY valid, complete JSON. No extra text."
+                    time.sleep(1 + attempt)
                 else:
                     logger.error("All retries exhausted — JSON still invalid")
                     raise
+
             except Exception as e:
+                msg = str(e)
+                # Quota/rate-limit
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    # brief backoff; if still failing after retries, treat as hard exhaustion
+                    if attempt < retries:
+                        sleep_s = min(20, 2 ** attempt * 3)
+                        logger.warning(f"Gemini 429/RESOURCE_EXHAUSTED (attempt {attempt + 1}) — backoff {sleep_s}s")
+                        time.sleep(sleep_s)
+                        continue
+                    raise GeminiQuotaExceededError(
+                        "Gemini quota exhausted (429 RESOURCE_EXHAUSTED). "
+                        "Check plan/billing + rate limits: https://ai.google.dev/gemini-api/docs/rate-limits"
+                    )
+
                 logger.error(f"Gemini API error: {e}")
                 raise
 
@@ -213,7 +295,15 @@ class ScriptGenerator:
             f"Generating script | channel: {self.channel.get('name')} "
             f"| character: {char['name']} | niche: \"{niche[:50]}\" | lang: {lang_name}"
         )
-        result = self._call_gemini(prompt)
+
+        try:
+            result = self._call_gemini(prompt)
+        except GeminiQuotaExceededError as e:
+            if os.getenv("ALLOW_FALLBACK_SCRIPT", "true").lower() in ("1", "true", "yes"):
+                logger.warning(f"{e} — using fallback script generator")
+                result = _fallback_script(self.channel, lang_code, lang_name, niche)
+            else:
+                raise
         result["language_code"] = lang_code
         result["channel_key"] = channel_key
         result["channel_name"] = self.channel.get("name", "")

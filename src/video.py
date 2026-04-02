@@ -57,28 +57,60 @@ class VideoCompiler:
         """
         logger.info(f"Compiling {len(clip_paths)} clips → final video...")
 
-        # 1. Write concat list
-        concat_file = self.output_dir / f"{job_id}_concat.txt"
-        with open(concat_file, "w") as f:
-            for clip in clip_paths:
-                f.write(f"file '{Path(clip).resolve()}'\n")
+        # 1) Normalize each clip to a consistent format.
+        # Higgsfield clips can vary in resolution/fps/codecs; the concat demuxer is brittle.
+        # We re-encode each clip into a standard H.264 yuv420p stream, then concatenate.
+        normalized_dir = self.output_dir / f"{job_id}_norm"
+        normalized_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Concatenate clips (mute original audio — we add TTS instead)
+        normalized: List[str] = []
+        for i, clip in enumerate(clip_paths):
+            in_path = str(Path(clip).resolve())
+            out_path = str((normalized_dir / f"clip_{i:03d}.mp4").resolve())
+
+            # Re-encode to a known-good YouTube-friendly baseline
+            # -an: drop any source audio (we overlay our own TTS)
+            norm_cmd = [
+                "ffmpeg", "-y",
+                "-i", in_path,
+                "-an",
+                "-vf",
+                f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"fps={self.fps}",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                out_path,
+            ]
+            self._run(norm_cmd, f"Normalize clip {i}")
+            normalized.append(out_path)
+
+        # 2) Concatenate normalized clips via concat filter (more tolerant than concat demuxer)
         raw_video = self.output_dir / f"{job_id}_raw.mp4"
+        input_args: List[str] = []
+        for p in normalized:
+            input_args += ["-i", p]
+
+        # Build filter: [0:v][1:v]...concat=n=N:v=1:a=0[v]
+        v_inputs = "".join([f"[{i}:v:0]" for i in range(len(normalized))])
+        filter_complex = f"{v_inputs}concat=n={len(normalized)}:v=1:a=0[v]"
+
         concat_cmd = [
             "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(concat_file),
-            "-an",                          # drop original audio from clips
+            *input_args,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "18",
             "-pix_fmt", "yuv420p",
-            "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-                   f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black",
+            "-movflags", "+faststart",
             str(raw_video),
         ]
-        self._run(concat_cmd, "Concat clips")
+        self._run(concat_cmd, "Concat normalized clips")
 
         # 3. Get total video duration
         video_duration = self._get_duration(str(raw_video))
@@ -95,19 +127,28 @@ class VideoCompiler:
         else:
             merge_input = str(raw_video)
 
+        # Important: do NOT stream-copy video here.
+        # Some providers output MP4s with odd timebases / edit lists that upload fine
+        # but fail YouTube processing or produce "not a real video" symptoms.
+        # Re-encode to a clean baseline and add faststart.
         merge_cmd = [
             "ffmpeg", "-y",
             "-i", merge_input,
             "-i", audio_path,
             "-map", "0:v:0",
             "-map", "1:a:0",
-            "-c:v", "copy",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-r", str(self.fps),
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             str(final_path),
         ]
-        self._run(merge_cmd, "Merge audio")
+        self._run(merge_cmd, "Merge audio (re-encode)")
 
         # 5. Add cinematic colour grade (subtle LUT-style via ffmpeg)
         graded_path = self.output_dir / f"{job_id}_graded.mp4"
@@ -128,9 +169,18 @@ class VideoCompiler:
             output = str(final_path)
 
         # Cleanup temp files
-        for f in [concat_file, raw_video]:
-            try: Path(f).unlink(missing_ok=True)
-            except: pass
+        try:
+            # remove normalized clips directory
+            for p in normalized_dir.glob("*.mp4"):
+                p.unlink(missing_ok=True)
+            normalized_dir.rmdir()
+        except Exception:
+            pass
+
+        try:
+            Path(raw_video).unlink(missing_ok=True)
+        except Exception:
+            pass
 
         size_mb = Path(output).stat().st_size / (1024 * 1024)
         logger.info(f"✅ Video compiled: {output} ({size_mb:.1f}MB)")
@@ -192,7 +242,9 @@ class VideoCompiler:
             "ffmpeg", "-y",
             "-stream_loop", "-1", "-i", video_path,
             "-t", str(target_duration),
-            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+            "-vf", f"fps={self.fps}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             str(out_path),
         ]
         self._run(cmd, "Extend video")

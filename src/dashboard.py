@@ -18,6 +18,8 @@ import yaml
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+
+from src.service_state import get_state, set_state, disable_all, enable_all
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from dotenv import load_dotenv
@@ -265,6 +267,13 @@ async def trigger_job(request: Request):
     """Trigger a new video generation job."""
     global _current_job_thread, _current_job_id, _cancel_event
 
+    state = get_state()
+    if not state.get("jobs_enabled", True):
+        return JSONResponse(
+            {"error": "Jobs are currently disabled", "state": state},
+            status_code=423,
+        )
+
     store = get_store()
     running = store.get_running_job()
     if running:
@@ -447,9 +456,52 @@ async def get_analytics():
     return {"videos": videos, "channel": channel}
 
 
+@app.get("/api/services")
+async def services_state():
+    """Get current scheduler/job enabled flags."""
+    return get_state()
+
+
+@app.post("/api/services/disable")
+async def services_disable(request: Request):
+    """Disable scheduler + job triggers."""
+    body = await request.json() if await request.body() else {}
+    reason = body.get("reason", "paused")
+    return disable_all(reason=reason)
+
+
+@app.post("/api/services/enable")
+async def services_enable(request: Request):
+    """Enable scheduler + job triggers."""
+    body = await request.json() if await request.body() else {}
+    reason = body.get("reason", "")
+    return enable_all(reason=reason)
+
+
+@app.post("/api/services/set")
+async def services_set(request: Request):
+    """Partially update service state.
+
+    Body example:
+      {"scheduler_enabled": false, "jobs_enabled": true, "reason": "debugging"}
+    """
+    body = await request.json() if await request.body() else {}
+    patch = {k: body.get(k) for k in ("scheduler_enabled", "jobs_enabled", "reason") if k in body}
+    return set_state(**patch)
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    state = get_state()
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "services": {
+            "scheduler_enabled": state.get("scheduler_enabled", True),
+            "jobs_enabled": state.get("jobs_enabled", True),
+            "reason": state.get("reason", ""),
+        },
+    }
 
 
 @app.get("/health")

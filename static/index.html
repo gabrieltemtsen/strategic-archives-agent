@@ -131,6 +131,20 @@
         <!-- Control Panel -->
         <section class="card control-panel">
             <h2><span class="icon">🎛️</span> Control Panel</h2>
+
+            <!-- Services Kill-Switch -->
+            <div class="control-row" style="margin-bottom:12px; gap:10px; align-items:center;">
+                <div class="form-group" style="min-width:240px;">
+                    <label>Services</label>
+                    <div id="servicesStatus" style="font-size:0.95rem; color:var(--text-secondary);">
+                        Loading...
+                    </div>
+                </div>
+                <button class="btn" id="servicesToggleBtn" onclick="toggleServices()">
+                    ⏳ Loading...
+                </button>
+            </div>
+
             <div class="control-row">
                 <div class="form-group">
                     <label>Format</label>
@@ -253,6 +267,87 @@
         let currentJobId = null;
         let eventSource = null;
         let previewInterval = null;
+        let servicesState = null;
+
+        // ─── Services Kill-Switch ───────────────────────────────
+        async function loadServicesState() {
+            try {
+                const res = await fetch('/api/services');
+                servicesState = await res.json();
+                renderServicesState();
+            } catch (e) {
+                const el = document.getElementById('servicesStatus');
+                if (el) el.textContent = 'Failed to load service state';
+            }
+        }
+
+        function renderServicesState() {
+            const statusEl = document.getElementById('servicesStatus');
+            const btn = document.getElementById('servicesToggleBtn');
+            if (!statusEl || !btn) return;
+
+            const schedulerOn = servicesState?.scheduler_enabled !== false;
+            const jobsOn = servicesState?.jobs_enabled !== false;
+            const reason = servicesState?.reason || '';
+
+            const allOn = schedulerOn && jobsOn;
+            statusEl.innerHTML = allOn
+                ? `<b style="color: var(--success)">ON</b> — scheduler + jobs enabled`
+                : `<b style="color: var(--danger)">PAUSED</b> — ${!schedulerOn ? 'scheduler' : ''}${(!schedulerOn && !jobsOn) ? ' + ' : ''}${!jobsOn ? 'jobs' : ''} disabled${reason ? ` <span style="color: var(--text-muted)">(reason: ${escapeHtml(reason)})</span>` : ''}`;
+
+            btn.textContent = allOn ? '🛑 Pause All Services' : '✅ Resume All Services';
+            btn.className = allOn ? 'btn btn-cancel active' : 'btn btn-primary';
+
+            // Disable job trigger when jobs are disabled
+            const triggerBtn = document.getElementById('triggerBtn');
+            if (triggerBtn) {
+                triggerBtn.disabled = !jobsOn || triggerBtn.disabled;
+                if (!jobsOn) {
+                    triggerBtn.textContent = '⛔ Jobs Paused';
+                } else if (!currentJobId) {
+                    // Restore based on format
+                    const vf = document.getElementById('videoFormat')?.value || 'long';
+                    triggerBtn.textContent = vf === 'short' ? '📱 Generate Short' : '🚀 Generate Video';
+                    triggerBtn.disabled = false;
+                }
+            }
+        }
+
+        async function toggleServices() {
+            const btn = document.getElementById('servicesToggleBtn');
+            if (!btn) return;
+            btn.disabled = true;
+
+            const schedulerOn = servicesState?.scheduler_enabled !== false;
+            const jobsOn = servicesState?.jobs_enabled !== false;
+            const allOn = schedulerOn && jobsOn;
+
+            try {
+                if (allOn) {
+                    if (!confirm('Pause ALL services? This stops the scheduler and blocks new jobs.')) {
+                        btn.disabled = false;
+                        return;
+                    }
+                    await fetch('/api/services/disable', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ reason: 'paused from UI' })
+                    });
+                } else {
+                    await fetch('/api/services/enable', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ reason: '' })
+                    });
+                }
+                await loadServicesState();
+            } catch (e) {
+                alert('Failed to toggle services: ' + e.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
         // ─── Format Switcher ──────────────────────────────────────
         function updateContentTypes() {
             const format = document.getElementById('videoFormat').value;
@@ -348,7 +443,14 @@
                 if (res.status === 409) {
                     alert('A job is already running!');
                     btn.disabled = false;
-                    btn.textContent = '🚀 Generate Video';
+                    updateContentTypes();
+                    return;
+                }
+
+                if (res.status === 423) {
+                    alert('Jobs are currently paused. Resume services to trigger new jobs.');
+                    btn.disabled = false;
+                    await loadServicesState();
                     return;
                 }
 
@@ -640,10 +742,12 @@
 
         // ─── Init ──────────────────────────────────────────────
         loadChannels();
+        loadServicesState();
         checkCurrentJob();
         loadHistory();
         loadAnalytics();
         setInterval(loadHistory, 30000);
+        setInterval(loadServicesState, 15000);
     </script>
 
 </body>

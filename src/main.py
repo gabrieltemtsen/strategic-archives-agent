@@ -54,6 +54,14 @@ def run_daily_job(
     Full pipeline:
     Pick Channel → Pick Type → Generate → Approve → TTS → Visuals → Compile → Upload
     """
+
+    # Operator kill-switch: allow pausing background activity from the dashboard.
+    from src.service_state import get_state
+    state = get_state()
+    if not state.get("jobs_enabled", True):
+        logger.warning(f"Jobs disabled — skipping run_daily_job (reason: {state.get('reason','')})")
+        return
+
     from src.script_gen import ScriptGenerator
     from src.tts import TTSEngine
     from src.visuals import VisualsGenerator
@@ -329,6 +337,14 @@ def start_scheduler(config: dict):
 
     logger.info(f"{len(active)} channel(s), {total_jobs} daily job(s) scheduled. Running...")
     while True:
+        # Operator kill-switch: pause the scheduler loop without redeploy.
+        from src.service_state import get_state
+        state = get_state()
+        if not state.get("scheduler_enabled", True):
+            logger.info(f"Scheduler paused (reason: {state.get('reason','')})")
+            time.sleep(30)
+            continue
+
         schedule.run_pending()
         time.sleep(30)
 

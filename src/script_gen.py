@@ -70,20 +70,27 @@ class ScriptGenerator:
     def __init__(self, channel: dict):
         """channel: enriched channel dict from channel_loader.load_channels()"""
         self.channel = channel
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.client = genai.Client(
+            api_key=os.getenv("GEMINI_API_KEY"),
+            http_options=types.HttpOptions(api_version="v1beta"),
+        )
 
     def _call_gemini(self, prompt: str, retries: int = 2) -> dict:
+        use_json_mode = True
         for attempt in range(retries + 1):
             try:
+                cfg_kwargs = {
+                    "temperature": 0.8,
+                    "top_p": 0.95,
+                    "max_output_tokens": 8192,
+                }
+                if use_json_mode:
+                    cfg_kwargs["response_mime_type"] = "application/json"
+
                 response = self.client.models.generate_content(
                     model=GEMINI_MODEL,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.8,
-                        top_p=0.95,
-                        max_output_tokens=8192,
-                        response_mime_type="application/json",
-                    ),
+                    config=types.GenerateContentConfig(**cfg_kwargs),
                 )
                 text = response.text.strip()
                 if text.startswith("```json"):
@@ -102,6 +109,10 @@ class ScriptGenerator:
                     logger.error("All retries exhausted — JSON still invalid")
                     raise
             except Exception as e:
+                if use_json_mode and "JSON mode is not enabled" in str(e):
+                    logger.warning("JSON mode rejected by API version, retrying without response_mime_type...")
+                    use_json_mode = False
+                    continue
                 logger.error(f"Gemini API error: {e}")
                 raise
 

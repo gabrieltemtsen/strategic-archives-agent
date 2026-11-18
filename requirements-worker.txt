@@ -1,0 +1,7 @@
+# Heavy / worker-only dependencies (installed in GitHub Actions or local runner, NOT on Vercel)
+edge-tts>=6.1.12
+gTTS>=2.5.1
+Pillow>=10.3.0
+schedule>=1.2.0
+uvicorn[standard]>=0.30.0
+sse-starlette>=2.1.0

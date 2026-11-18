@@ -49,6 +49,8 @@ def run_daily_job(
     language: Optional[str] = None,
     dry_run: bool = False,
     slot_time: Optional[str] = None,   # e.g. "08:00" — overrides channel upload_time for this run
+    auto_approve: bool = False,
+    video_format: str = "long",
 ):
     """
     Full pipeline:
@@ -145,55 +147,75 @@ def run_daily_job(
 
     try:
         # ── 1. Generate Script ────────────────────────────────────
-        logger.info("[1/5] Generating script...")
+        logger.info("[1/5] Generating scene-synchronized script...")
         gen = ScriptGenerator(channel)
-        script_data = gen.generate(content_type=content_type, language=language)
+        script_data = gen.generate(
+            content_type=content_type, language=language, video_format=video_format
+        )
         logger.info(f"Script: '{script_data['title']}' [{script_data.get('language_code','en')}]")
 
         # ── 2. Telegram Script Approval ───────────────────────────
-        logger.info("[2/5] Awaiting script approval...")
-        result = approval.send_for_approval(script_data)
-
-        if result["status"] == "rejected":
-            logger.info("Rejected — regenerating...")
-            script_data = gen.generate(content_type=content_type, language=language)
+        if auto_approve:
+            logger.info("[2/5] Auto-approve enabled — skipping interactive wait")
+            approval.notify(
+                f"📝 <b>Auto-approved Script</b> ({channel['name']})\n"
+                f"🎬 <b>{script_data['title']}</b>\n"
+                f"🎭 Scenes: {len(script_data.get('scenes', []))}"
+            )
+        else:
+            logger.info("[2/5] Awaiting script approval...")
             result = approval.send_for_approval(script_data)
 
-        if result["status"] in ("rejected", "timeout"):
-            logger.warning(f"Job aborted: {result['status']}")
-            return
+            if result["status"] == "rejected":
+                logger.info("Rejected — regenerating...")
+                script_data = gen.generate(
+                    content_type=content_type, language=language, video_format=video_format
+                )
+                result = approval.send_for_approval(script_data)
 
-        script_data = result["script_data"]
+            if result["status"] in ("rejected", "timeout"):
+                logger.warning(f"Job aborted: {result['status']}")
+                return
+
+            script_data = result["script_data"]
         logger.info("Script approved ✓")
 
         if dry_run:
             approval.notify(f"🧪 <b>Dry run done</b> — {script_data['title']}")
             return
 
-        scenes = script_data.get("scenes", [])
-
-        # ── 3. TTS Voiceover ──────────────────────────────────────
-        logger.info("[3/6] Generating voiceover...")
+        # ── 3. Per-Scene TTS Voiceover ────────────────────────────
+        logger.info("[3/5] Generating per-scene voiceover...")
         tts = TTSEngine(channel, output_dir=output_dir)
-        # Concatenate all scene narrations for a single TTS pass
-        full_script = script_data.get("script") or " ".join(
-            s.get("narration", "") for s in scenes if s.get("narration")
-        )
-        audio_path = tts.synthesize(
-            script=full_script,
-            job_id=job_id,
-            language_code=script_data.get("language_code", "en")
-        )
+        scenes = script_data.get("scenes", [])
+        if scenes:
+            audio_path, scene_timings = tts.synthesize_scenes(
+                scenes=scenes,
+                job_id=job_id,
+                language_code=script_data.get("language_code", "en"),
+            )
+        else:
+            audio_path = tts.synthesize(
+                script=script_data["script"],
+                job_id=job_id,
+                language_code=script_data.get("language_code", "en"),
+            )
+            scene_timings = None
 
-        # ── 4. Scene Images ───────────────────────────────────────
-        logger.info("[4/6] Generating scene images...")
-        from src.character_gen import CharacterGenerator
-        char_gen = CharacterGenerator(channel_key=channel_key, output_dir=output_dir)
-        image_paths = char_gen.generate_all_scenes(scenes, job_id)
+        # ── 4. Scene Images (with cohesive style guide) ───────────
+        logger.info("[4/5] Generating visuals...")
+        aspect_ratio = "9:16" if video_format == "short" else "16:9"
+        vis = VisualsGenerator(
+            channel,
+            output_dir=output_dir,
+            aspect_ratio=aspect_ratio,
+            style_guide=script_data.get("visual_style_guide"),
+        )
+        scene_prompts = script_data.get("scene_prompts", [])
+        if not scene_prompts:
+            scene_prompts = [channel.get("visuals", {}).get("style", "cinematic scene")]
 
-        # Generate thumbnail separately
-        from src.visuals import VisualsGenerator
-        vis = VisualsGenerator(channel, output_dir=output_dir)
+        image_paths = vis.generate_scene_images(scene_prompts, job_id)
         thumbnail_path = vis.generate_thumbnail(
             script_data.get("thumbnail_prompt", script_data["title"]), job_id
         )
@@ -201,50 +223,18 @@ def run_daily_job(
         if not image_paths:
             raise RuntimeError("No images generated")
 
-        # ── 5. Animate Scenes (Higgsfield) ────────────────────────
-        logger.info("[5/6] Animating scenes with Higgsfield...")
-        animator = None
-        clip_paths = None
-        try:
-            from src.scene_animator import SceneAnimator
-            animator = SceneAnimator(output_dir=output_dir)
-            clip_paths = animator.animate_scenes(scenes, image_paths, job_id)
-            logger.info(f"Animated {len(clip_paths)} clips ✓")
-
-            # Notify if credits ran out mid-batch (fallback was used for some scenes)
-            if getattr(animator, "credits_exhausted", False):
-                approval.notify(
-                    "⚠️ <b>Higgsfield credits exhausted mid-job</b>\n\n"
-                    "Some scenes used Ken Burns fallback. Video still completed.\n"
-                    "Top up at: https://cloud.higgsfield.ai"
-                )
-        except Exception as e:
-            logger.warning(f"Higgsfield unavailable: {e} — falling back to Ken Burns for all scenes")
-            clip_paths = None
-
-        # ── 6a. Compile Video ─────────────────────────────────────
-        logger.info("[6a/6] Compiling video...")
-        compiler = VideoCompiler(channel, output_dir=output_dir, assets_dir=assets_dir)
-        if clip_paths:
-            video_path = compiler.compile_from_clips(
-                clip_paths=clip_paths, audio_path=audio_path,
-                job_id=job_id, title=script_data["title"]
-            )
-        else:
-            video_path = compiler.compile(
-                image_paths=image_paths, audio_path=audio_path,
-                job_id=job_id, title=script_data["title"]
-            )
-
-        # ── 6b. Mix Background Music ──────────────────────────────
-        logger.info("[6b/6] Mixing background music...")
-        from src.music_mixer import MusicMixer
-        mixer = MusicMixer(channel_key=channel_key, assets_dir=assets_dir)
-        final_video = mixer.mix(
-            video_path=video_path,
-            output_path=video_path.replace("_graded.mp4", "_final.mp4").replace("_final.mp4", "_final.mp4"),
+        # ── 5a. Compile Video ─────────────────────────────────────
+        logger.info("[5a/5] Compiling video...")
+        compiler = VideoCompiler(
+            channel, output_dir=output_dir, assets_dir=assets_dir, video_format=video_format
         )
-        video_path = final_video
+        video_path = compiler.compile(
+            image_paths=image_paths,
+            audio_path=audio_path,
+            job_id=job_id,
+            title=script_data["title"],
+            scene_timings=scene_timings,
+        )
 
         info = compiler.get_video_info(video_path)
         logger.info(f"Video: {info['duration']:.0f}s, {info['size_mb']:.1f}MB")
@@ -259,7 +249,8 @@ def run_daily_job(
             tags=script_data.get("tags", []),
             thumbnail_path=thumbnail_path,
             language=script_data.get("language_code", "en"),
-            schedule=True
+            schedule=(video_format != "short"),
+            video_format=video_format,
         )
 
         approval.notify(
@@ -355,12 +346,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Strategic Archives Multi-Channel Agent")
     parser.add_argument("--run-now",  action="store_true")
     parser.add_argument("--dry-run",  action="store_true")
+    parser.add_argument("--auto-approve", action="store_true",
+                        help="Skip blocking Telegram approval (for unattended cron/CI)")
     parser.add_argument("--dashboard", action="store_true")
     parser.add_argument("--channel",  default=None,
                         help="Channel key (e.g. kids_universe, ai_tools). "
                              "If omitted and >1 active channel, Telegram picker is shown.")
     parser.add_argument("--type",     default=None)
     parser.add_argument("--lang",     default=None)
+    parser.add_argument("--format",   default="long", choices=["long", "short"])
     parser.add_argument("--config",   default="config/config.yaml")
     parser.add_argument("--port",     type=int, default=None)
 
@@ -387,12 +381,16 @@ if __name__ == "__main__":
         port = args.port or int(os.getenv("PORT", 8000))
         start_dashboard(port=port)
     elif args.run_now or args.dry_run:
+        from src.startup import bootstrap
+        bootstrap()
         run_daily_job(
             config=config,
             channel_key=args.channel,
             content_type=args.type,
             language=args.lang,
-            dry_run=args.dry_run
+            dry_run=args.dry_run,
+            auto_approve=args.auto_approve,
+            video_format=args.format,
         )
     else:
         start_scheduler(config)

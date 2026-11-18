@@ -4,6 +4,7 @@
 
 # YouTube auth
 .youtube_token.pkl
+*.pkl
 client_secrets.json
 client_secret.json
 
@@ -33,3 +34,4 @@ build/
 # Google credentials
 *.json
 !.env.example
+!vercel.json

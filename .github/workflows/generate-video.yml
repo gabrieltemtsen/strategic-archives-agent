@@ -1,0 +1,81 @@
+name: Generate & Upload YouTube Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_key:
+        description: "Channel key (leave empty to run default/first active)"
+        required: false
+        default: ""
+      content_type:
+        description: "Optional content type override"
+        required: false
+        default: ""
+      language:
+        description: "Optional language code (en, fr, yo, ha, ig, pt, es)"
+        required: false
+        default: ""
+      video_format:
+        description: "Video format: long or short"
+        required: false
+        default: "long"
+      auto_approve:
+        description: "Skip blocking Telegram approval"
+        required: false
+        default: "true"
+
+jobs:
+  render-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install FFmpeg & fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+
+      - name: Install Python dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt -r requirements-worker.txt
+
+      - name: Run Video Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HUGGINGFACE_API_TOKEN: ${{ secrets.HUGGINGFACE_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CHANNELS: ${{ secrets.CHANNELS }}
+          YOUTUBE_CLIENT_SECRET_B64: ${{ secrets.YOUTUBE_CLIENT_SECRET_B64 }}
+          YOUTUBE_TOKEN_B64_KIDS_UNIVERSE: ${{ secrets.YOUTUBE_TOKEN_B64_KIDS_UNIVERSE }}
+          YOUTUBE_TOKEN_B64_STRATEGIC_ARCHIVES: ${{ secrets.YOUTUBE_TOKEN_B64_STRATEGIC_ARCHIVES }}
+          YOUTUBE_TOKEN_B64_STORIES_TALES: ${{ secrets.YOUTUBE_TOKEN_B64_STORIES_TALES }}
+          YOUTUBE_TOKEN_B64_GABE_DEV_CODES: ${{ secrets.YOUTUBE_TOKEN_B64_GABE_DEV_CODES }}
+          YOUTUBE_TOKEN_B64: ${{ secrets.YOUTUBE_TOKEN_B64 }}
+        run: |
+          ARGS="--run-now"
+          if [ -n "${{ github.event.inputs.channel_key }}" ]; then
+            ARGS="$ARGS --channel ${{ github.event.inputs.channel_key }}"
+          fi
+          if [ -n "${{ github.event.inputs.content_type }}" ]; then
+            ARGS="$ARGS --type ${{ github.event.inputs.content_type }}"
+          fi
+          if [ -n "${{ github.event.inputs.language }}" ]; then
+            ARGS="$ARGS --lang ${{ github.event.inputs.language }}"
+          fi
+          if [ -n "${{ github.event.inputs.video_format }}" ]; then
+            ARGS="$ARGS --format ${{ github.event.inputs.video_format }}"
+          fi
+          if [ "${{ github.event.inputs.auto_approve }}" != "false" ]; then
+            ARGS="$ARGS --auto-approve"
+          fi
+          python -m src.main $ARGS

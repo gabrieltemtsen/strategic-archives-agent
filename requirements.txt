@@ -1,34 +1,14 @@
-# Core
+# Lightweight dependencies (used by Vercel Serverless API & base worker)
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
-schedule>=1.2.0
 requests>=2.31.0
+pytz>=2024.1
 
-# Google / Gemini
-google-genai>=1.0.0               # New SDK (replaces deprecated google-generativeai)
-google-cloud-texttospeech>=2.16.0
+# Google / Gemini / YouTube
+google-genai>=1.0.0
 google-auth>=2.29.0
 google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.128.0
 
-# TTS Fallback
-gTTS>=2.5.1
-
-# Video
-moviepy>=1.0.3
-ffmpeg-python>=0.2.0
-Pillow>=10.3.0
-
-# Image generation
-huggingface-hub>=0.23.0
-
-# Movie engine (Higgsfield animation)
-# No extra deps — uses requests (above) + subprocess (stdlib)
-
-# Timezone
-pytz>=2024.1
-
-# Dashboard (FastAPI + live log streaming)
+# Web Dashboard / API
 fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-sse-starlette>=2.1.0

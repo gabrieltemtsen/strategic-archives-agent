@@ -122,7 +122,9 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         check_cancelled()
         store.update_job(job_id, step="Generating script...", step_number=1)
         gen = ScriptGenerator(channel)
-        script_data = gen.generate(content_type=content_type, language=language)
+        script_data = gen.generate(
+            content_type=content_type, language=language, video_format=video_format
+        )
         store.update_job(job_id, title=script_data["title"])
         logger.info(f"Script generated: '{script_data['title']}'")
 
@@ -133,7 +135,9 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
 
         if result["status"] == "rejected":
             logger.info("Script rejected. Regenerating...")
-            script_data = gen.generate(content_type=content_type, language=language)
+            script_data = gen.generate(
+                content_type=content_type, language=language, video_format=video_format
+            )
             result = approval.send_for_approval(script_data)
 
         if result["status"] in ("rejected", "timeout"):
@@ -144,36 +148,39 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         store.update_job(job_id, title=script_data["title"])
         logger.info("Script approved ✓")
 
-        # Step 3: TTS
+        # Step 3: Per-Scene TTS
         check_cancelled()
         store.update_job(job_id, step="Generating voiceover...", step_number=3)
         tts = TTSEngine(channel, output_dir=output_dir)
-        audio_path = tts.synthesize(
-            script=script_data["script"],
-            job_id=job_id,
-            language_code=script_data.get("language_code", "en")
-        )
+        scenes = script_data.get("scenes", [])
+        if scenes:
+            audio_path, scene_timings = tts.synthesize_scenes(
+                scenes=scenes,
+                job_id=job_id,
+                language_code=script_data.get("language_code", "en"),
+            )
+        else:
+            audio_path = tts.synthesize(
+                script=script_data["script"],
+                job_id=job_id,
+                language_code=script_data.get("language_code", "en"),
+            )
+            scene_timings = None
 
         # Step 4: Images
         check_cancelled()
         store.update_job(job_id, step="Generating scene images...", step_number=4)
         is_short = video_format == "short"
         aspect_ratio = "9:16" if is_short else "16:9"
-        vis = VisualsGenerator(channel, output_dir=output_dir, aspect_ratio=aspect_ratio)
+        vis = VisualsGenerator(
+            channel,
+            output_dir=output_dir,
+            aspect_ratio=aspect_ratio,
+            style_guide=script_data.get("visual_style_guide"),
+        )
         scene_prompts = script_data.get("scene_prompts", [])
-
-        # Shorts need 3-5 images, long-form needs 12-15
-        if is_short:
-            if len(scene_prompts) < 3:
-                base = scene_prompts or ["colorful children's vertical scene"]
-                while len(scene_prompts) < 3:
-                    scene_prompts.append(base[len(scene_prompts) % len(base)])
-            scene_prompts = scene_prompts[:5]  # Cap at 5 for shorts
-        else:
-            if len(scene_prompts) < 10:
-                base = scene_prompts or ["colorful children's storybook scene"]
-                while len(scene_prompts) < 15:
-                    scene_prompts.append(base[len(scene_prompts) % len(base)])
+        if not scene_prompts:
+            scene_prompts = ["cinematic scene"]
 
         image_paths = vis.generate_scene_images(scene_prompts, job_id)
         check_cancelled()
@@ -193,6 +200,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
             audio_path=audio_path,
             job_id=job_id,
             title=script_data["title"],
+            scene_timings=scene_timings,
         )
 
         check_cancelled()

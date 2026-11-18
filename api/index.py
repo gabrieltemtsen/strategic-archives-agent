@@ -153,6 +153,16 @@ async def dashboard():
     return HTMLResponse("<h1>Dashboard not found</h1>")
 
 
+def _decode_emoji(val: str) -> str:
+    """Decode literal \\uXXXX escapes (including surrogate pairs) if present."""
+    if val and "\\u" in val:
+        try:
+            return val.encode("utf-8").decode("unicode_escape").encode("utf-16", "surrogatepass").decode("utf-16")
+        except Exception:
+            pass
+    return val
+
+
 @app.get("/api/channels")
 async def get_channels():
     try:
@@ -164,7 +174,7 @@ async def get_channels():
                     "key": key,
                     "name": ch["name"],
                     "niche": ch.get("niche", ""),
-                    "emoji": ch.get("emoji", "📺"),
+                    "emoji": _decode_emoji(ch.get("emoji", "📺")),
                     "upload_time": ch.get("upload_time", "18:00"),
                     "youtube_id": ch.get("_youtube_channel_id", ""),
                 }
@@ -173,6 +183,11 @@ async def get_channels():
         }
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/services/status")
+async def services_status():
+    return {"enabled": True, "mode": "vercel+github_actions"}
 
 
 @app.post("/api/jobs/trigger")

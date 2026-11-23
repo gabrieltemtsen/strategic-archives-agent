@@ -158,6 +158,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
                 scenes=scenes,
                 job_id=job_id,
                 language_code=script_data.get("language_code", "en"),
+                characters=script_data.get("characters"),
             )
         else:
             audio_path = tts.synthesize(
@@ -191,6 +192,19 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
         if not image_paths:
             raise RuntimeError("No images generated")
 
+        # Step 4b: Animate Scenes (for character-acting channels)
+        check_cancelled()
+        from src.scene_animator import animate_scenes_if_enabled
+        video_clips = animate_scenes_if_enabled(
+            channel=channel,
+            scenes=scenes,
+            scene_timings=scene_timings,
+            image_paths=image_paths,
+            job_id=job_id,
+            output_dir=output_dir,
+            aspect_ratio=aspect_ratio,
+        )
+
         # Step 5: Compile + Upload
         check_cancelled()
         store.update_job(job_id, step="Compiling video...", step_number=5)
@@ -201,6 +215,7 @@ def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Eve
             job_id=job_id,
             title=script_data["title"],
             scene_timings=scene_timings,
+            video_clips=video_clips,
         )
 
         check_cancelled()

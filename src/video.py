@@ -202,6 +202,24 @@ class VideoCompiler:
             check=True,
         )
 
+    def _normalize_video_clip(self, src_mp4: str, out_mp4: str, target_duration: float):
+        """Scale/crop an AI-generated MP4 clip to target resolution, fps, and exact duration."""
+        src_dur = max(0.5, _probe_duration(src_mp4))
+        cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+        if src_dur < target_duration:
+            cmd.extend(["-stream_loop", "-1"])
+        cmd.extend([
+            "-i", src_mp4,
+            "-vf", (
+                f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+                f"crop={self.width}:{self.height},fps={self.fps},format=yuv420p"
+            ),
+            "-t", f"{target_duration:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-an", out_mp4,
+        ])
+        subprocess.run(cmd, check=True)
+
     def _concat_scenes_xfade(
         self, clip_paths: List[str], durations: List[float], out_mp4: str, fade_dur: float
     ):
@@ -249,6 +267,7 @@ class VideoCompiler:
         title: str = "",
         scene_timings: Optional[List[dict]] = None,
         subtitle_text: Optional[str] = None,
+        video_clips: Optional[List[Optional[str]]] = None,
     ) -> str:
         """
         Compile final video from scene images + narration audio + music + captions.
@@ -306,7 +325,11 @@ class VideoCompiler:
         try:
             for i, (img_p, dur, mot) in enumerate(zip(image_paths, clip_durations, motions)):
                 clip_p = str(self.output_dir / f"{job_id}_clip_{i:03d}.mp4")
-                self._render_scene_clip(img_p, clip_p, dur, mot)
+                anim_clip = video_clips[i] if (video_clips and i < len(video_clips)) else None
+                if anim_clip and os.path.exists(anim_clip):
+                    self._normalize_video_clip(anim_clip, clip_p, dur)
+                else:
+                    self._render_scene_clip(img_p, clip_p, dur, mot)
                 scene_clips.append(clip_p)
 
             self._concat_scenes_xfade(scene_clips, clip_durations, silent_video, fade_dur)

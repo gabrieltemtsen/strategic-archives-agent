@@ -16,7 +16,7 @@ import logging
 import subprocess
 import concurrent.futures
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +89,63 @@ class TTSEngine:
             return "Puck"    # Crisp, upbeat explainer voice
         return "Kore"        # Warm, friendly voice (kids / general)
 
+    def _is_drama_channel(self) -> bool:
+        key = (self.channel_config.get("key") or "").lower()
+        return key == "stories_tales" or any(
+            k in self.niche for k in ("nollywood", "nigerian movie", "market drama")
+        )
+
+    def _build_speaker_voices(
+        self, characters: Optional[List[dict]], scenes: List[dict], language_code: str
+    ) -> dict:
+        """Map each character name to a consistent (gemini_voice, edge_voice) pair."""
+        female_gemini = ["Kore", "Aoede", "Leda", "Zephyr"]
+        male_gemini = ["Charon", "Fenrir", "Puck", "Orus"]
+        female_edge_ng = ["en-NG-EzinneNeural"]
+        male_edge_ng = ["en-NG-AbeoNeural"]
+
+        char_gender = {}
+        for ch in characters or []:
+            name = (ch.get("name") or "").strip().lower()
+            gender = (ch.get("gender") or "").strip().lower()
+            if name:
+                char_gender[name] = gender
+
+        f_idx = 0
+        m_idx = 0
+        voice_map = {}
+        for sc in scenes:
+            speaker = (sc.get("speaker") or "").strip()
+            key = speaker.lower()
+            if not key or key in voice_map:
+                continue
+            gender = char_gender.get(key, "")
+            if not gender:
+                # Infer from common titles/names or alternate
+                if any(w in key for w in ("mama", "madam", "aunty", "sister", "queen", "girl", "woman")):
+                    gender = "female"
+                elif any(w in key for w in ("chief", "papa", "baba", "bro", "pastor", "man", "boy", "mr")):
+                    gender = "male"
+                else:
+                    gender = "female" if (f_idx <= m_idx) else "male"
+
+            if gender == "female":
+                g_voice = female_gemini[f_idx % len(female_gemini)]
+                e_voice = female_edge_ng[0] if language_code == "en" else self._pick_edge_voice(language_code)
+                f_idx += 1
+            else:
+                g_voice = male_gemini[m_idx % len(male_gemini)]
+                e_voice = male_edge_ng[0] if language_code == "en" else self._pick_edge_voice(language_code)
+                m_idx += 1
+
+            voice_map[key] = (g_voice, e_voice)
+        return voice_map
+
     def _pick_edge_voice(self, language_code: str) -> str:
         """Select a free Microsoft Edge Neural voice by language and niche."""
         dramatic = any(k in self.niche for k in ("war", "history", "horror", "scary", "crime"))
+        if language_code == "en" and self._is_drama_channel():
+            return "en-NG-EzinneNeural"
         voice_map = {
             "en": "en-US-ChristopherNeural" if dramatic else "en-US-AriaNeural",
             "fr": "fr-FR-HenriNeural" if dramatic else "fr-FR-DeniseNeural",
@@ -153,11 +207,13 @@ class TTSEngine:
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_data)
 
-    def _edge_tts_chunk(self, text: str, mp3_path: str, language_code: str):
+    def _edge_tts_chunk(
+        self, text: str, mp3_path: str, language_code: str, voice_override: str = None
+    ):
         """Synthesize a single chunk via free Edge Neural TTS."""
         import edge_tts
 
-        voice = self._pick_edge_voice(language_code)
+        voice = voice_override or self._pick_edge_voice(language_code)
         rate_val = self.config.get("speaking_rate", 1.0)
         pct = int((rate_val - 1.0) * 100)
         rate_str = f"{pct:+d}%"
@@ -186,7 +242,14 @@ class TTSEngine:
         tts = gTTS(text=text, lang=lang_map.get(language_code, "en"), slow=False)
         tts.save(mp3_path)
 
-    def _synthesize_segment(self, text: str, out_mp3: str, language_code: str) -> str:
+    def _synthesize_segment(
+        self,
+        text: str,
+        out_mp3: str,
+        language_code: str,
+        gemini_voice: str = None,
+        edge_voice: str = None,
+    ) -> str:
         """Synthesize a short segment (scene) with provider fallback."""
         clean = self._clean_script(text)
         if not clean:
@@ -202,13 +265,13 @@ class TTSEngine:
             try:
                 if prov == "gemini":
                     wav_tmp = out_mp3.replace(".mp3", ".wav")
-                    self._gemini_tts_chunk(clean, wav_tmp, self._pick_gemini_voice())
+                    self._gemini_tts_chunk(clean, wav_tmp, gemini_voice or self._pick_gemini_voice())
                     self._convert_to_mp3(wav_tmp, out_mp3)
                     if os.path.exists(wav_tmp):
                         os.remove(wav_tmp)
                     return out_mp3
                 elif prov == "edge":
-                    self._edge_tts_chunk(clean, out_mp3, language_code)
+                    self._edge_tts_chunk(clean, out_mp3, language_code, voice_override=edge_voice)
                     return out_mp3
                 elif prov == "gtts":
                     self._gtts_chunk(clean, out_mp3, language_code)
@@ -296,18 +359,31 @@ class TTSEngine:
         scenes: List[dict],
         job_id: str,
         language_code: str = "en",
+        characters: List[dict] = None,
     ) -> Tuple[str, List[dict]]:
         """
         Synthesize each scene separately so we get exact per-scene audio timings.
+        Supports multi-character voice mapping when scenes include `speaker`.
         Returns (merged_audio_path, scene_timings).
         """
         output_path = str(self.output_dir / f"{job_id}_audio.mp3")
         segment_paths = []
+        speaker_voices = self._build_speaker_voices(characters, scenes, language_code)
+        if speaker_voices:
+            logger.info(f"Multi-character voices mapped: {list(speaker_voices.keys())}")
         logger.info(f"Synthesizing {len(scenes)} scenes (primary: {self.provider})...")
 
         for i, sc in enumerate(scenes):
             seg_path = str(self.output_dir / f"{job_id}_scene_audio_{i:03d}.mp3")
-            self._synthesize_segment(sc.get("narration", ""), seg_path, language_code)
+            speaker_key = (sc.get("speaker") or "").strip().lower()
+            g_voice, e_voice = speaker_voices.get(speaker_key, (None, None))
+            self._synthesize_segment(
+                sc.get("narration", ""),
+                seg_path,
+                language_code,
+                gemini_voice=g_voice,
+                edge_voice=e_voice,
+            )
             segment_paths.append(seg_path)
             logger.info(f"TTS scene {i + 1}/{len(scenes)} ready")
 

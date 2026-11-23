@@ -36,7 +36,7 @@ def load_config(path: str = "config/config.yaml") -> dict:
 
 def cleanup_job_files(job_id: str, output_dir: str = "./output"):
     output = Path(output_dir)
-    for pattern in [f"{job_id}_scene_*.png", f"{job_id}_audio*.mp3",
+    for pattern in [f"{job_id}_scene_*.png", f"{job_id}_scene*.mp4", f"{job_id}_audio*.mp3",
                     f"{job_id}_final.mp4", f"{job_id}_thumbnail.png"]:
         for f in output.glob(pattern):
             f.unlink(missing_ok=True)
@@ -193,6 +193,7 @@ def run_daily_job(
                 scenes=scenes,
                 job_id=job_id,
                 language_code=script_data.get("language_code", "en"),
+                characters=script_data.get("characters"),
             )
         else:
             audio_path = tts.synthesize(
@@ -223,6 +224,18 @@ def run_daily_job(
         if not image_paths:
             raise RuntimeError("No images generated")
 
+        # ── 4b. Animate Scenes (for character-acting channels) ────
+        from src.scene_animator import animate_scenes_if_enabled
+        video_clips = animate_scenes_if_enabled(
+            channel=channel,
+            scenes=scenes,
+            scene_timings=scene_timings,
+            image_paths=image_paths,
+            job_id=job_id,
+            output_dir=output_dir,
+            aspect_ratio=aspect_ratio,
+        )
+
         # ── 5a. Compile Video ─────────────────────────────────────
         logger.info("[5a/5] Compiling video...")
         compiler = VideoCompiler(
@@ -234,6 +247,7 @@ def run_daily_job(
             job_id=job_id,
             title=script_data["title"],
             scene_timings=scene_timings,
+            video_clips=video_clips,
         )
 
         info = compiler.get_video_info(video_path)

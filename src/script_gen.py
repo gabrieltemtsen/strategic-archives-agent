@@ -24,6 +24,60 @@ SUPPORTED_LANGUAGES = {
 }
 
 VALID_MOTIONS = ("zoom_in", "zoom_out", "pan_left", "pan_right")
+VALID_SCENE_TYPES = ("character", "action", "establishing")
+
+NOLLYWOOD_DRAMA_PROMPT = """
+You are an elite Nollywood film director, scriptwriter, and YouTube retention strategist.
+
+Channel niche: {niche}
+Format: {format_label}
+Language: {language}
+Target duration: {min_duration}–{max_duration} seconds (~{word_count_min}–{word_count_max} words total spoken dialogue)
+Target scene count: {scene_count_min}–{scene_count_max} scenes
+
+Your task: Write ONE complete, gripping **Nigerian Nollywood market-style movie scene/story** where characters actually speak to each other, move, argue, gossip, or confront one another (NOT a narrator reading a story).
+
+Nollywood Market-Style Rules:
+1. CAST (2–4 characters): Define recurring characters (e.g., Mama Nkechi, Chinedu, Madam Bisi, Pastor/Customer/Apprentice) with exact, consistent `appearance` descriptions (age, Nigerian features, specific vibrant Ankara/lace/agbada/market-apron outfit & colors) so every scene renders the same people.
+2. DIALOGUE-DRIVEN (90%+ character dialogue): Every scene must be a character speaking directly to another character in natural, expressive Nigerian-flavored English (sharp comebacks, dramatic Nollywood tension, market banter, betrayal, supernatural/juju twist, or moral shock). Do NOT write narration unless a 1-line hook is strictly needed.
+3. HOOK (Scene 1): Open mid-confrontation or mid-shock in the bustling Nigerian market (Balogun/Onitsha/Ariaria market stalls, wooden tables with yams/tomatoes/fabrics, shoppers passing by).
+4. VISUAL CONSISTENCY: Define ONE cohesive `visual_style_guide`: photorealistic Nollywood cinema look, warm West African daylight, vibrant market colors, natural skin tones, 35mm cinematic lens, shallow depth of field.
+5. SCENE SYNC & MOTION:
+   - `visual_prompt`: Describe the exact framing (close-up, two-shot, over-the-shoulder), setting, expression, and repeat the exact outfit/appearance of every character in that shot.
+   - `motion_prompt`: Describe the physical acting and camera movement for video animation (e.g. "The woman slams her palm on the wooden market stall, leans forward pointing angrily while speaking, shoppers walk past in the background, subtle handheld camera push-in").
+   - `scene_type`: Use `"character"` for character acting/dialogue shots, `"action"` for dramatic movement/chases, `"establishing"` for wide market/street shots.
+
+Return ONLY a valid JSON object with this exact schema:
+{{
+  "title": "Compelling Nollywood-style title (under 70 chars)",
+  "description": "2–3 sentence SEO-friendly YouTube description",
+  "content_type": "nollywood_market_drama",
+  "tags": ["nollywood", "nigerian movie", "tag3", "tag4", "tag5"],
+  "visual_style_guide": "Photorealistic Nollywood cinema, warm Lagos market sunlight, vibrant colors, natural skin tones, 35mm filmic look, no text or watermarks",
+  "thumbnail_prompt": "Dramatic Nollywood movie poster still: shocked market woman and angry trader face-to-face in a busy Nigerian market, high contrast",
+  "characters": [
+    {{
+      "name": "Mama Nkechi",
+      "role": "Fierce textile trader",
+      "gender": "female",
+      "appearance": "45-year-old Nigerian woman, braided hair under a bright yellow gele headwrap, wearing a red-and-gold Ankara wrapper and blouse"
+    }}
+  ],
+  "scenes": [
+    {{
+      "speaker": "Mama Nkechi",
+      "dialogue": "Exact spoken line for this character...",
+      "visual_prompt": "Medium close-up of Mama Nkechi (45-year-old Nigerian woman in yellow gele and red-and-gold Ankara) glaring across a wooden stall piled with fabrics in a busy Nigerian market",
+      "motion_prompt": "Mama Nkechi gestures sharply with her right hand and leans forward while speaking, market shoppers moving behind her, cinematic handheld push-in",
+      "scene_type": "character",
+      "camera_motion": "zoom_in",
+      "caption_highlight": "Optional 2-4 word dramatic hook (or empty string)"
+    }}
+  ],
+  "language": "{language}",
+  "language_code": "{language_code}"
+}}
+"""
 
 MASTER_PROMPT = """
 You are an elite YouTube retention strategist, scriptwriter, and visual director.
@@ -116,11 +170,16 @@ class ScriptGenerator:
                 logger.error(f"Gemini API error: {e}")
                 raise
 
+    def _is_drama_channel(self) -> bool:
+        key = (self.channel.get("key") or "").lower()
+        niche = (self.channel.get("niche") or "").lower()
+        return key == "stories_tales" or any(
+            k in niche for k in ("nollywood", "nigerian movie", "market drama")
+        )
+
     def _pick_language(self) -> tuple[str, str]:
-        supported = self.channel.get("content", {}).get("languages", {}).get("supported", ["en"])
-        weighted = ["en"] * 3 + ["fr"] * 2 + [l for l in supported if l not in ("en", "fr")]
-        code = random.choice(weighted)
-        return code, SUPPORTED_LANGUAGES.get(code, "English")
+        """Default all channels to English unless a specific language is chosen."""
+        return "en", SUPPORTED_LANGUAGES["en"]
 
     def _estimate_word_count(self, min_s: int, max_s: int) -> tuple[int, int]:
         # ~135 words/min natural narration pace
@@ -149,21 +208,31 @@ class ScriptGenerator:
 
         normalized_scenes = []
         for idx, sc in enumerate(scenes):
-            narration = (sc.get("narration") or "").strip()
+            narration = (sc.get("dialogue") or sc.get("narration") or "").strip()
             if not narration:
                 continue
             motion = sc.get("camera_motion", VALID_MOTIONS[idx % len(VALID_MOTIONS)])
             if motion not in VALID_MOTIONS:
                 motion = VALID_MOTIONS[idx % len(VALID_MOTIONS)]
+            scene_type = sc.get("scene_type") or sc.get("type") or "character"
+            if scene_type not in VALID_SCENE_TYPES:
+                scene_type = "character"
             normalized_scenes.append({
+                "speaker": (sc.get("speaker") or "").strip(),
                 "narration": narration,
                 "visual_prompt": (sc.get("visual_prompt") or "cinematic scene").strip(),
+                "motion_prompt": (sc.get("motion_prompt") or "").strip(),
+                "scene_type": scene_type,
                 "camera_motion": motion,
                 "caption_highlight": (sc.get("caption_highlight") or "").strip(),
             })
 
         data["scenes"] = normalized_scenes
-        data["script"] = "\n[SECTION]\n".join(s["narration"] for s in normalized_scenes)
+        data["characters"] = data.get("characters") or []
+        data["script"] = "\n[SECTION]\n".join(
+            f"{s['speaker']}: {s['narration']}" if s.get("speaker") else s["narration"]
+            for s in normalized_scenes
+        )
         data["scene_prompts"] = [s["visual_prompt"] for s in normalized_scenes]
         data["visual_style_guide"] = (
             data.get("visual_style_guide")
@@ -204,7 +273,8 @@ class ScriptGenerator:
         if content_type:
             niche = f"{niche} — specifically: {content_type.replace('_', ' ')}"
 
-        prompt = MASTER_PROMPT.format(
+        template = NOLLYWOOD_DRAMA_PROMPT if self._is_drama_channel() else MASTER_PROMPT
+        prompt = template.format(
             niche=niche,
             format_label=format_label,
             language=lang_name,

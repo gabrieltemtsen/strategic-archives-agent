@@ -370,10 +370,16 @@ class SceneAnimator:
             if self.gemini_key and not self.gemini_exhausted:
                 dialogue_hint = scene.get("narration", "").strip()
                 speaker = scene.get("speaker", "").strip()
-                full_motion = motion_prompt
+                who = speaker if speaker else "The main character"
+                full_motion = (
+                    f"Using the character and market setting from the reference image, create a lively, "
+                    f"fully animated Nollywood movie clip with strong, continuous physical movement (NOT a still image): "
+                    f"{motion_prompt}. {who} actively moves their body, gestures dramatically with their hands, "
+                    f"changes facial expression, and speaks with clear, continuous mouth and lip movement"
+                )
                 if dialogue_hint:
-                    who = f"{speaker} is speaking" if speaker else "Character is speaking"
-                    full_motion = f"{motion_prompt}. {who} expressively with natural lip and facial movement."
+                    full_motion += f' as if saying: "{dialogue_hint[:140]}"'
+                full_motion += ". Keep bystanders and market life moving naturally in the background."
                 clip = self._animate_scene_gemini(
                     image_path=img_path,
                     motion_prompt=full_motion,

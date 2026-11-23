@@ -44,7 +44,7 @@ Nollywood Market-Style Rules:
 4. VISUAL CONSISTENCY: Define ONE cohesive `visual_style_guide`: photorealistic Nollywood cinema look, warm West African daylight, vibrant market colors, natural skin tones, 35mm cinematic lens, shallow depth of field.
 5. SCENE SYNC & MOTION:
    - `visual_prompt`: Describe the exact framing (close-up, two-shot, over-the-shoulder), setting, expression, and repeat the exact outfit/appearance of every character in that shot.
-   - `motion_prompt`: Describe the physical acting and camera movement for video animation (e.g. "The woman slams her palm on the wooden market stall, leans forward pointing angrily while speaking, shoppers walk past in the background, subtle handheld camera push-in").
+   - `motion_prompt`: Describe BIG, unmistakable physical acting and movement for AI video generation (NOT just camera movement). Always specify active body motion, hand gestures, head turns, mouth/lip movement while speaking, and background market shoppers walking past — e.g. "Mama Nkechi steps forward, slams her palm on the wooden market stall, waves her other hand angrily while speaking with animated facial expressions and clear mouth movement; shoppers walk past behind her."
    - `scene_type`: Use `"character"` for character acting/dialogue shots, `"action"` for dramatic movement/chases, `"establishing"` for wide market/street shots.
 
 Return ONLY a valid JSON object with this exact schema:

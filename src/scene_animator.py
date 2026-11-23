@@ -110,58 +110,109 @@ class SceneAnimator:
         motion_prompt: str,
         job_id: str,
         scene_idx: int,
+        duration: int = 5,
     ) -> Optional[str]:
-        """Animate a scene image into an MP4 clip via Gemini Video API."""
+        """Animate a scene image into an MP4 clip via Gemini Interactions API (gemini-omni-1.2-flash)."""
         if self.gemini_exhausted or not self.gemini_key:
             return None
 
-        from google import genai
-        from google.genai import types
+        import base64
 
-        client = genai.Client(api_key=self.gemini_key)
         with open(image_path, "rb") as f:
-            image_bytes = f.read()
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
         mime_type = "image/jpeg" if str(image_path).lower().endswith((".jpg", ".jpeg")) else "image/png"
+        clip_dur_sec = max(3, min(15, int(round(duration))))
+
+        headers = {
+            "x-goog-api-key": self.gemini_key,
+            "Content-Type": "application/json",
+        }
+        interactions_url = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
         for model_name in GEMINI_VIDEO_MODELS:
             try:
-                logger.info(f"Animating scene {scene_idx} with Gemini ({model_name}, {self.aspect_ratio})...")
-                operation = client.models.generate_videos(
-                    model=model_name,
-                    prompt=motion_prompt,
-                    image={
-                        "image_bytes": image_bytes,
-                        "mime_type": mime_type,
-                    },
-                    config=types.GenerateVideosConfig(
-                        aspect_ratio=self.aspect_ratio,
-                        number_of_videos=1,
-                    ),
+                logger.info(
+                    f"Animating scene {scene_idx} with Gemini ({model_name}, {self.aspect_ratio}, {clip_dur_sec}s)..."
                 )
+                payload = {
+                    "model": model_name,
+                    "input": [
+                        {"type": "text", "text": motion_prompt},
+                        {"type": "image", "mime_type": mime_type, "data": img_b64},
+                    ],
+                    "response_format": {
+                        "type": "video",
+                        "delivery": "uri",
+                        "duration": f"{clip_dur_sec}s",
+                        "resolution": "720p",
+                        "aspect_ratio": self.aspect_ratio,
+                    },
+                    "background": True,
+                }
+                r = requests.post(interactions_url, headers=headers, json=payload, timeout=60)
+                if r.status_code in (403, 429):
+                    err_msg = r.text[:300]
+                    logger.warning(f"Gemini video ({model_name}) {r.status_code}: {err_msg}")
+                    if any(k in err_msg.lower() for k in ("quota", "billing", "resource_exhausted", "permission", "not enabled")):
+                        self.gemini_exhausted = True
+                        return None
+                    continue
+                if r.status_code not in (200, 201, 202):
+                    logger.warning(f"Gemini video ({model_name}) HTTP {r.status_code}: {r.text[:300]}")
+                    continue
 
-                # Poll until done (max ~5 min)
-                for attempt in range(30):
-                    if getattr(operation, "done", False):
+                data = r.json()
+                interaction_id = data.get("id")
+                status = data.get("status", "")
+
+                # Poll if background / in_progress
+                for attempt in range(40):
+                    if status == "completed":
                         break
-                    time.sleep(10)
-                    operation = client.operations.get(operation)
-                    if attempt % 3 == 0:
-                        logger.info(f"  [Gemini video {attempt + 1}] rendering...")
+                    if status in ("failed", "error", "cancelled"):
+                        raise RuntimeError(f"Gemini interaction {interaction_id} {status}: {data.get('error', data)}")
+                    if not interaction_id:
+                        break
+                    time.sleep(8)
+                    pr = requests.get(f"{interactions_url}/{interaction_id}", headers=headers, timeout=30)
+                    if pr.status_code == 200:
+                        data = pr.json()
+                        status = data.get("status", "")
+                    if attempt % 4 == 0:
+                        logger.info(f"  [Gemini video {attempt + 1}] status={status}...")
 
-                if not getattr(operation, "done", False):
-                    raise RuntimeError(f"Gemini video timed out for scene {scene_idx}")
+                if status != "completed":
+                    raise RuntimeError(f"Gemini video did not complete for scene {scene_idx} (status={status})")
 
-                resp = getattr(operation, "response", None)
-                videos = getattr(resp, "generated_videos", None) or []
-                if not videos:
-                    raise RuntimeError(f"No generated_videos returned by {model_name}")
+                # Extract video URI or base64 data from steps/outputs
+                video_uri = None
+                video_b64 = None
+                blocks = []
+                for step in data.get("steps", []):
+                    blocks.extend(step.get("content", []))
+                blocks.extend(data.get("outputs", []))
+
+                for blk in blocks:
+                    if blk.get("type") == "video" or str(blk.get("mime_type", "")).startswith("video/"):
+                        video_uri = blk.get("uri")
+                        video_b64 = blk.get("data")
+                        if video_uri or video_b64:
+                            break
 
                 out_path = self.output_dir / f"{job_id}_scene{scene_idx:02d}.mp4"
-                generated_video = videos[0]
-                client.files.download(file=generated_video.video)
-                generated_video.video.save(str(out_path))
-                logger.info(f"  ✅ Gemini clip saved: {out_path}")
-                return str(out_path)
+                if video_uri:
+                    vr = requests.get(video_uri, headers={"x-goog-api-key": self.gemini_key}, timeout=120)
+                    vr.raise_for_status()
+                    out_path.write_bytes(vr.content)
+                    logger.info(f"  ✅ Gemini clip saved: {out_path} ({len(vr.content)//1024}KB)")
+                    return str(out_path)
+                elif video_b64:
+                    raw = base64.b64decode(video_b64)
+                    out_path.write_bytes(raw)
+                    logger.info(f"  ✅ Gemini clip saved: {out_path} ({len(raw)//1024}KB)")
+                    return str(out_path)
+                else:
+                    raise RuntimeError(f"No video URI/data in completed interaction: {str(data)[:300]}")
 
             except Exception as e:
                 err_str = str(e).lower()
@@ -315,13 +366,20 @@ class SceneAnimator:
                 or "character speaking expressively with natural body movement, cinematic camera"
             )
 
-            # 1. Primary: Gemini Video API (free/included with GEMINI_API_KEY)
+            # 1. Primary: Gemini Video API (Interactions API with GEMINI_API_KEY)
             if self.gemini_key and not self.gemini_exhausted:
+                dialogue_hint = scene.get("narration", "").strip()
+                speaker = scene.get("speaker", "").strip()
+                full_motion = motion_prompt
+                if dialogue_hint:
+                    who = f"{speaker} is speaking" if speaker else "Character is speaking"
+                    full_motion = f"{motion_prompt}. {who} expressively with natural lip and facial movement."
                 clip = self._animate_scene_gemini(
                     image_path=img_path,
-                    motion_prompt=motion_prompt,
+                    motion_prompt=full_motion,
                     job_id=job_id,
                     scene_idx=i,
+                    duration=raw_dur,
                 )
                 if clip:
                     clip_paths.append(clip)

@@ -64,7 +64,7 @@ class JobStore:
                 pass  # Column already exists
             conn.commit()
 
-    def create_job(self, job_id: str, content_type: str = "", language: str = "", video_format: str = "long") -> dict:
+    def create_job(self, job_id: str, content_type: str = "", language: str = "", video_format: str = "short") -> dict:
         """Create a new job record."""
         now = datetime.now().isoformat()
         with sqlite3.connect(DB_PATH) as conn:

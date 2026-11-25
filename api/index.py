@@ -75,7 +75,7 @@ def _dispatch_github_workflow(
     channel_key: Optional[str] = None,
     content_type: Optional[str] = None,
     language: Optional[str] = None,
-    video_format: str = "long",
+    video_format: str = "short",
     auto_approve: bool = True,
 ) -> dict:
     repo = _gh_repo()
@@ -87,7 +87,7 @@ def _dispatch_github_workflow(
         "channel_key": channel_key or "",
         "content_type": content_type or "",
         "language": language or "",
-        "video_format": video_format or "long",
+        "video_format": video_format or "short",
         "auto_approve": "true" if auto_approve else "false",
     }
     resp = requests.post(
@@ -136,7 +136,7 @@ def _fetch_github_runs(limit: int = 20) -> list:
             "title": r.get("display_title") or f"Workflow Run #{r.get('run_number')}",
             "content_type": "",
             "language": "",
-            "video_format": "long",
+            "video_format": "short",
             "youtube_url": "",
             "html_url": r.get("html_url", ""),
             "created_at": r.get("created_at", ""),
@@ -198,7 +198,7 @@ async def trigger_job(request: Request):
             channel_key=body.get("channel_key"),
             content_type=body.get("content_type"),
             language=body.get("language"),
-            video_format=body.get("format", "long"),
+            video_format=body.get("format", "short"),
             auto_approve=body.get("auto_approve", True),
         )
         return {

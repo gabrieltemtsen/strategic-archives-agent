@@ -148,7 +148,7 @@ class YouTubeUploader:
         thumbnail_path: Optional[str] = None,
         language: str = "en",
         schedule: bool = True,
-        video_format: str = "long",
+        video_format: str = "short",
     ) -> dict:
         """
         Upload a video to YouTube.

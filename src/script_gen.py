@@ -247,7 +247,7 @@ class ScriptGenerator:
         self,
         content_type: Optional[str] = None,
         language: Optional[str] = None,
-        video_format: str = "long",
+        video_format: str = "short",
         **kwargs,
     ) -> dict:
         """Generate a scene-synchronized video script for the channel."""

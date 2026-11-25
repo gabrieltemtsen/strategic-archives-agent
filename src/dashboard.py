@@ -70,7 +70,7 @@ def load_config(path: str = "config/config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Event, content_type: str = None, language: str = None, video_format: str = "long", channel_key: str = None):
+def run_job_in_background(job_id: str, config: dict, cancel_event: threading.Event, content_type: str = None, language: str = None, video_format: str = "short", channel_key: str = None):
     """Run a video generation job in a background thread with log capture."""
     global _current_job_id
 
@@ -308,7 +308,7 @@ async def trigger_job(request: Request):
     body = await request.json() if await request.body() else {}
     content_type = body.get("content_type")
     language = body.get("language")
-    video_format = body.get("format", "long")
+    video_format = body.get("format", "short")
     channel_key = body.get("channel_key")
 
     import uuid

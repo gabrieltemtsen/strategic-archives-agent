@@ -65,7 +65,7 @@ class VideoCompiler:
         config: dict,
         output_dir: str = "./output",
         assets_dir: str = "./assets",
-        video_format: str = "long",
+        video_format: str = "short",
     ):
         self.config = config
         self.video_config = config.get("content", {}).get("video", {})

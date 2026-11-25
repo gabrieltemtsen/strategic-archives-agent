@@ -83,16 +83,28 @@ class TTSEngine:
         explicit = self.config.get("voice")
         if explicit:
             return explicit
+        if self._is_kids_channel():
+            return "Leda"    # Bright, youthful voice if Gemini fallback is used
         if any(k in self.niche for k in ("war", "history", "horror", "scary", "crime", "creepy")):
             return "Charon"  # Deeper, dramatic storytelling voice
         if any(k in self.niche for k in ("code", "coding", "dev", "ai", "tech", "tutorial")):
             return "Puck"    # Crisp, upbeat explainer voice
-        return "Kore"        # Warm, friendly voice (kids / general)
+        return "Kore"        # Warm, friendly voice
 
     def _is_drama_channel(self) -> bool:
         key = (self.channel_config.get("key") or "").lower()
         return key == "stories_tales" or any(
             k in self.niche for k in ("nollywood", "nigerian movie", "market drama")
+        )
+
+    def _is_kids_channel(self) -> bool:
+        key = (self.channel_config.get("key") or "").lower()
+        made_for_kids = bool(
+            self.channel_config.get("made_for_kids")
+            or self.channel_config.get("youtube", {}).get("made_for_kids")
+        )
+        return key == "kids_universe" or made_for_kids or any(
+            k in self.niche for k in ("kids", "children", "nursery", "bedtime")
         )
 
     def _build_speaker_voices(
@@ -143,6 +155,17 @@ class TTSEngine:
 
     def _pick_edge_voice(self, language_code: str) -> str:
         """Select a free Microsoft Edge Neural voice by language and niche."""
+        if self._is_kids_channel():
+            kids_map = {
+                "en": "en-US-AnaNeural",      # Authentic child voice
+                "fr": "fr-FR-EloiseNeural",   # Child voice
+                "es": "es-ES-ElviraNeural",
+                "pt": "pt-BR-FranciscaNeural",
+                "yo": "en-NG-EzinneNeural",
+                "ha": "en-NG-AbeoNeural",
+                "ig": "en-NG-EzinneNeural",
+            }
+            return kids_map.get(language_code, "en-US-AnaNeural")
         dramatic = any(k in self.niche for k in ("war", "history", "horror", "scary", "crime"))
         if language_code == "en" and self._is_drama_channel():
             return "en-NG-EzinneNeural"
@@ -256,9 +279,16 @@ class TTSEngine:
             clean = "..."
 
         providers = []
-        if self.provider == "gemini" and os.getenv("GEMINI_API_KEY"):
-            providers.append("gemini")
-        providers.extend(["edge", "gtts"])
+        if self._is_kids_channel():
+            # Edge TTS has real child voices (en-US-AnaNeural / fr-FR-EloiseNeural)
+            providers.append("edge")
+            if self.provider == "gemini" and os.getenv("GEMINI_API_KEY"):
+                providers.append("gemini")
+            providers.append("gtts")
+        else:
+            if self.provider == "gemini" and os.getenv("GEMINI_API_KEY"):
+                providers.append("gemini")
+            providers.extend(["edge", "gtts"])
 
         last_err = None
         for prov in providers:

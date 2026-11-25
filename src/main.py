@@ -50,7 +50,7 @@ def run_daily_job(
     dry_run: bool = False,
     slot_time: Optional[str] = None,   # e.g. "08:00" — overrides channel upload_time for this run
     auto_approve: bool = False,
-    video_format: str = "long",
+    video_format: str = "short",
 ):
     """
     Full pipeline:
@@ -336,7 +336,7 @@ def start_scheduler(config: dict):
         for t in times:
             logger.info(f"Scheduling '{ch['name']}' [{key}] at {t} WAT")
             schedule.every().day.at(t).do(
-                run_daily_job, config=config, channel_key=key, slot_time=t
+                run_daily_job, config=config, channel_key=key, slot_time=t, video_format="short"
             )
             total_jobs += 1
 
@@ -368,7 +368,7 @@ if __name__ == "__main__":
                              "If omitted and >1 active channel, Telegram picker is shown.")
     parser.add_argument("--type",     default=None)
     parser.add_argument("--lang",     default=None)
-    parser.add_argument("--format",   default="long", choices=["long", "short"])
+    parser.add_argument("--format",   default="short", choices=["long", "short"])
     parser.add_argument("--config",   default="config/config.yaml")
     parser.add_argument("--port",     type=int, default=None)
 

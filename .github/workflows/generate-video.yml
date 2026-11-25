@@ -16,9 +16,9 @@ on:
         required: false
         default: ""
       video_format:
-        description: "Video format: long or short"
+        description: "Video format: short or long"
         required: false
-        default: "long"
+        default: "short"
       auto_approve:
         description: "Skip blocking Telegram approval"
         required: false
